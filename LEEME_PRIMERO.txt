@@ -1,0 +1,38 @@
+APP RUTEO PDF - SIN EXCEL
+
+Esta aplicacion NO usa Microsoft Excel y NO usa macros VBA.
+Lee archivos .xlsx/.xlsm/.csv o Google Sheets y genera PDFs localmente.
+
+PARA EL USUARIO FINAL
+1. Descomprime el ZIP.
+2. Abre RUTEO_PDF.exe.
+3. No necesitas instalar Python.
+4. No necesitas ejecutar archivos BAT.
+
+El EXE ya incluye las dependencias necesarias para funcionar.
+
+USO BASICO
+1. Selecciona un archivo .xlsx, .xlsm o .csv, o carga desde Google Sheets.
+2. Revisa el visualizador de libro.
+3. Pulsa "Cargar para PDFs".
+4. En filtros, elige la columna y el valor que deseas.
+5. Elige la carpeta de salida.
+6. Pulsa "Generar PDFs".
+
+CONFIGURACION FIJA
+- Hoja preferida: CARGO (3)
+- Rango: A1:Z4001
+- Datos desde fila 2
+- Agrupa por columna E
+- Carpeta por columna F
+- Nombre PDF: cyr_NOMBRE.pdf
+
+ACTUALIZACIONES
+- La app puede revisar versiones nuevas desde Ayuda > Buscar actualizaciones.
+- Las versiones se publican en GitHub Releases.
+- El usuario descarga el ZIP nuevo y reemplaza el EXE anterior.
+
+GOOGLE SHEETS
+- "Verificar cambios" lee Google Sheets una vez y detecta si hubo cambios.
+- Si hubo cambios, "Actualizar ahora" aplica esa lectura ya verificada sin volver a descargar.
+- "Cargar para PDFs" prepara filtros y PDFs usando el libro ya cargado.

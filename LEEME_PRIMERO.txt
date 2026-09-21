@@ -1,11 +1,11 @@
-APP RUTEO PDF - SIN EXCEL
+Aplicativo CyR - SIN EXCEL
 
 Esta aplicacion NO usa Microsoft Excel y NO usa macros VBA.
 Lee archivos .xlsx/.xlsm/.csv o Google Sheets y genera PDFs localmente.
 
 PARA EL USUARIO FINAL
 1. Descomprime el ZIP.
-2. Abre RUTEO_PDF.exe.
+2. Abre Aplicativo CyR.exe.
 3. No necesitas instalar Python.
 4. No necesitas ejecutar archivos BAT.
 
@@ -29,6 +29,11 @@ CONFIGURACION FIJA
 
 ACTUALIZACIONES
 - La app puede revisar versiones nuevas desde Ayuda > Buscar actualizaciones.
+- Cuando exista una versión nueva, el usuario solo debe pulsar Sí/Aceptar.
+  El aplicativo descargará el ZIP, verificará que no esté dañado, se cerrará,
+  reemplazará la instalación y volverá a abrirse automáticamente.
+- Por seguridad, el aplicativo se cierra automáticamente después de 5 horas sin actividad.
+  Cada clic o tecla reinicia el conteo. Muestra un aviso en pantalla 5 minutos antes.
 - Las versiones se publican en GitHub Releases.
 - El usuario descarga el ZIP nuevo y reemplaza el EXE anterior.
 

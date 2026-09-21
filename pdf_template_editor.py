@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QRectF, QSize
-from PySide6.QtGui import QColor, QColorConstants, QFont, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QColorConstants, QFont, QGuiApplication, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QStyle,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -70,11 +72,15 @@ class PdfTemplateService:
             return Path(base) / "RuteoApp" / "Templates" / "pdf_templates.json"
         return Path.home() / "AppData" / "Roaming" / "RuteoApp" / "Templates" / "pdf_templates.json"
 
-    def LoadTemplates(self) -> List[PdfTemplateModel]:
-        if not self.storage_path.exists():
+    def _bundled_storage_path(self) -> Path:
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        return base / "assets" / "pdf_templates.json"
+
+    def _read_templates_file(self, path: Path) -> List[PdfTemplateModel]:
+        if not path.exists():
             return []
         try:
-            raw = json.loads(self.storage_path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return []
         templates = []
@@ -85,20 +91,30 @@ class PdfTemplateService:
                 continue
         return templates
 
+    def LoadTemplates(self) -> List[PdfTemplateModel]:
+        templates = self._read_templates_file(self.storage_path)
+        if templates:
+            return templates
+        return self._read_templates_file(self._bundled_storage_path())
+
     def SaveTemplate(self, template: PdfTemplateModel) -> None:
         template.UpdatedAt = datetime.now().isoformat(timespec="seconds")
         templates = self.LoadTemplates()
+        template.IsDefault = True
+        kept_templates = []
         replaced = False
         for idx, existing in enumerate(templates):
-            if existing.TemplateId == template.TemplateId:
-                templates[idx] = template
-                replaced = True
-                break
+            if existing.TemplateType == template.TemplateType:
+                if not replaced:
+                    kept_templates.append(template)
+                    replaced = True
+                continue
+            kept_templates.append(existing)
         if not replaced:
-            templates.append(template)
+            kept_templates.append(template)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.storage_path.write_text(
-            json.dumps([asdict(t) for t in templates], ensure_ascii=False, indent=2),
+            json.dumps([asdict(t) for t in kept_templates], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -173,10 +189,10 @@ class PdfTemplatePreview(QWidget):
         super().__init__(parent)
         self.template = template
         self.zoom = 1.0
-        self.setMinimumSize(820, 620)
+        self.setMinimumSize(620, 430)
 
     def sizeHint(self) -> QSize:
-        return QSize(920, 680)
+        return QSize(780, 520)
 
     def set_template(self, template: PdfTemplateModel):
         self.template = template
@@ -296,36 +312,38 @@ class PdfTemplateEditorWindow(QDialog):
         self._zoom = 1.0
 
         self.setWindowTitle("Editor de plantilla PDF moderna")
-        self.resize(1280, 840)
-        self.setMinimumSize(1120, 720)
+        self.setMinimumSize(760, 480)
+        self._ajustar_tamano_a_pantalla()
+        self._aplicar_estilo_editor()
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
 
         self.tabs = QTabWidget()
-        self.tabs.setFixedHeight(82)
-        self.tabs.addTab(self._crear_tab_inicio(), "Inicio")
-        self.tabs.addTab(self._crear_tab_insertar(), "Insertar")
-        self.tabs.addTab(self._crear_tab_diseno(), "Diseno")
-        self.tabs.addTab(self._crear_tab_vista(), "Vista")
+        self.tabs.setIconSize(QSize(16, 16))
+        self.tabs.setFixedHeight(108)
+        self.tabs.addTab(self._crear_tab_inicio(), self._icono("inicio"), "Inicio")
+        self.tabs.addTab(self._crear_tab_insertar(), self._icono("insertar"), "Insertar")
+        self.tabs.addTab(self._crear_tab_diseno(), self._icono("diseno"), "Diseno")
+        self.tabs.addTab(self._crear_tab_vista(), self._icono("vista"), "Vista")
         root.addWidget(self.tabs)
 
         body = QHBoxLayout()
-        body.setSpacing(10)
+        body.setSpacing(8)
         root.addLayout(body, 1)
 
         panel = QFrame()
         panel.setObjectName("panel")
-        panel.setFixedWidth(330)
+        panel.setFixedWidth(306)
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(12, 10, 12, 10)
-        panel_layout.setSpacing(8)
+        panel_layout.setContentsMargins(10, 8, 10, 8)
+        panel_layout.setSpacing(6)
         panel_layout.addWidget(QLabel("Datos de plantilla"))
 
         form = QGridLayout()
         form.setHorizontalSpacing(8)
-        form.setVerticalSpacing(7)
+        form.setVerticalSpacing(6)
         panel_layout.addLayout(form)
 
         self.empresa = self._line(self.template.CompanyName)
@@ -342,7 +360,7 @@ class PdfTemplateEditorWindow(QDialog):
         self.estilo.addItems(["Clasico", "Moderno", "Corporativo"])
         self.estilo.setCurrentText(self.template.HeaderStyle if self.template.HeaderStyle in {"Clasico", "Moderno", "Corporativo"} else "Moderno")
         self.observaciones = QTextEdit(self.template.ObservationsText)
-        self.observaciones.setFixedHeight(72)
+        self.observaciones.setFixedHeight(58)
         self.check_logo = QCheckBox("Mostrar logo")
         self.check_fecha = QCheckBox("Mostrar fecha")
         self.check_total = QCheckBox("Mostrar total asignado")
@@ -379,23 +397,38 @@ class PdfTemplateEditorWindow(QDialog):
             form.addWidget(check, row, 0, 1, 2)
             row += 1
 
-        panel_layout.addStretch(1)
-        body.addWidget(panel)
+        panel_scroll = QScrollArea()
+        panel_scroll.setObjectName("panelScroll")
+        panel_scroll.setFrameShape(QFrame.NoFrame)
+        panel_scroll.setWidgetResizable(True)
+        panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        panel_scroll.setMinimumWidth(318)
+        panel_scroll.setMaximumWidth(332)
+        panel_scroll.setWidget(panel)
+        body.addWidget(panel_scroll)
 
         self.preview = PdfTemplatePreview(self.template)
         scroll = QScrollArea()
+        scroll.setObjectName("previewScroll")
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.preview)
         body.addWidget(scroll, 1)
 
-        bottom = QHBoxLayout()
-        root.addLayout(bottom)
+        bottom_bar = QFrame()
+        bottom_bar.setObjectName("bottomBar")
+        bottom = QHBoxLayout(bottom_bar)
+        bottom.setContentsMargins(8, 6, 8, 0)
+        bottom.setSpacing(8)
+        root.addWidget(bottom_bar, 0)
         bottom.addStretch(1)
         btn_preview = QPushButton("Vista previa")
         btn_save = QPushButton("Guardar plantilla")
         btn_cancel = QPushButton("Cancelar")
         btn_save.setObjectName("botonPrimario")
+        self._preparar_boton(btn_preview, "vista")
+        self._preparar_boton(btn_save, "guardar")
+        self._preparar_boton(btn_cancel, "cancelar")
         btn_preview.clicked.connect(self._actualizar_preview)
         btn_save.clicked.connect(self._guardar)
         btn_cancel.clicked.connect(self.reject)
@@ -406,19 +439,184 @@ class PdfTemplateEditorWindow(QDialog):
         self._conectar_cambios()
         self._actualizar_preview()
 
+    def _ajustar_tamano_a_pantalla(self):
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1060, 640)
+            return
+        available = screen.availableGeometry()
+        min_width = max(640, min(820, available.width() - 80))
+        min_height = max(460, min(520, available.height() - 80))
+        self.setMinimumSize(min_width, min_height)
+        width = min(1120, max(min_width, int(available.width() * 0.90)))
+        height = min(680, max(min_height, int(available.height() * 0.84)))
+        self.resize(width, height)
+
+    def _aplicar_estilo_editor(self):
+        self.setStyleSheet("""
+            QDialog {
+                background: #f3f6fb;
+                color: #0f172a;
+                font-family: "Segoe UI";
+                font-size: 12px;
+            }
+            QTabWidget::pane {
+                background: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #eaf1f8;
+                border: 1px solid #cbd5e1;
+                border-bottom-color: #cbd5e1;
+                border-top-left-radius: 7px;
+                border-top-right-radius: 7px;
+                color: #334155;
+                font-weight: 650;
+                min-height: 26px;
+                min-width: 92px;
+                padding: 5px 12px;
+                margin-right: 3px;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #0f4c81;
+                border-bottom-color: #ffffff;
+            }
+            QTabBar::tab:hover {
+                background: #f8fbff;
+                color: #0f4c81;
+            }
+            QFrame#panel {
+                background: #ffffff;
+                border: 1px solid #d5e0ec;
+                border-radius: 8px;
+            }
+            QFrame#bottomBar {
+                background: #f8fafc;
+                border-top: 1px solid #d8e2ee;
+            }
+            QScrollArea#panelScroll,
+            QScrollArea#previewScroll {
+                background: transparent;
+                border: none;
+            }
+            QLabel {
+                color: #1f2937;
+                font-weight: 650;
+            }
+            QLineEdit,
+            QComboBox,
+            QTextEdit {
+                background: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                color: #0f172a;
+                padding: 4px 7px;
+                selection-background-color: #1d4ed8;
+                selection-color: #ffffff;
+            }
+            QLineEdit:focus,
+            QComboBox:focus,
+            QTextEdit:focus {
+                border: 1px solid #2563eb;
+                background: #ffffff;
+            }
+            QCheckBox {
+                color: #334155;
+                font-weight: 600;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 15px;
+                height: 15px;
+            }
+            QPushButton {
+                background: #ffffff;
+                border: 1px solid #c4d2e2;
+                border-radius: 7px;
+                color: #14213d;
+                font-weight: 650;
+                min-height: 30px;
+                padding: 4px 10px;
+            }
+            QPushButton:hover {
+                background: #eff6ff;
+                border-color: #60a5fa;
+                color: #0f4c81;
+            }
+            QPushButton:pressed {
+                background: #dbeafe;
+            }
+            QPushButton#botonPrimario {
+                background: #1557b0;
+                border-color: #1557b0;
+                color: #ffffff;
+            }
+            QPushButton#botonPrimario:hover {
+                background: #0f4c9c;
+                border-color: #0f4c9c;
+            }
+        """)
+
+    def _icono(self, nombre: str):
+        mapa = {
+            "inicio": QStyle.StandardPixmap.SP_ComputerIcon,
+            "insertar": QStyle.StandardPixmap.SP_FileDialogNewFolder,
+            "diseno": QStyle.StandardPixmap.SP_DriveHDIcon,
+            "vista": QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            "guardar": QStyle.StandardPixmap.SP_DialogSaveButton,
+            "cancelar": QStyle.StandardPixmap.SP_DialogCancelButton,
+            "logo": QStyle.StandardPixmap.SP_FileDialogContentsView,
+            "color": QStyle.StandardPixmap.SP_DialogApplyButton,
+            "texto": QStyle.StandardPixmap.SP_FileIcon,
+            "alinear": QStyle.StandardPixmap.SP_ArrowRight,
+            "zoom_mas": QStyle.StandardPixmap.SP_ArrowUp,
+            "zoom_menos": QStyle.StandardPixmap.SP_ArrowDown,
+            "pagina": QStyle.StandardPixmap.SP_TitleBarMaxButton,
+        }
+        return self.style().standardIcon(mapa.get(nombre, QStyle.StandardPixmap.SP_FileIcon))
+
+    def _preparar_boton(self, button: QPushButton, icon_name: str):
+        button.setMinimumHeight(30)
+        button.setIcon(self._icono(icon_name))
+        button.setIconSize(QSize(16, 16))
+
+    def _icono_para_herramienta(self, label: str) -> str:
+        mapa = {
+            "Insertar logo": "logo",
+            "Color principal": "color",
+            "Color secundario": "color",
+            "Color texto": "color",
+            "Color fondo": "color",
+            "Vista previa": "vista",
+            "Zoom +": "zoom_mas",
+            "Zoom -": "zoom_menos",
+            "Pagina completa": "pagina",
+            "Izquierda": "alinear",
+            "Centrar": "alinear",
+            "Derecha": "alinear",
+        }
+        if label.startswith("Insertar"):
+            return "insertar"
+        if label in {"Negrita", "Cursiva", "Subrayado", "Fuente", "Tamano"}:
+            return "texto"
+        return mapa.get(label, "texto")
+
     def _line(self, value: str) -> QLineEdit:
         line = QLineEdit(value or "")
-        line.setFixedHeight(30)
+        line.setFixedHeight(28)
         return line
 
     def _tool_tab(self, labels: List[str]) -> QWidget:
         tab = QWidget()
         layout = QHBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(6)
         for label in labels:
             button = QPushButton(label)
-            button.setMinimumHeight(30)
+            self._preparar_boton(button, self._icono_para_herramienta(label))
             layout.addWidget(button)
             if label == "Insertar logo":
                 button.clicked.connect(self._elegir_logo)

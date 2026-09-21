@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import sys
 import threading
 import time
 import zipfile
@@ -20,6 +21,7 @@ from xml.etree import ElementTree as ET
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -35,6 +37,12 @@ from workbook_models import SheetModel, WorkbookModel
 
 
 INCOMPLETE_READ_MESSAGE = "No se pudo completar la lectura del Google Sheets. Verifica tu conexión e intenta nuevamente."
+ALCANCES_GOOGLE_SHEETS = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+NOMBRE_TOKEN_GOOGLE = "google_token.json"
+PATRONES_CREDENCIALES_GOOGLE = ("client_secret*.json", "google_oauth*.json")
 
 
 class _RetryableDownloadError(RuntimeError):
@@ -61,6 +69,85 @@ def _safe_text(value) -> str:
         except Exception:
             pass
     return text.strip()
+
+
+def obtener_carpeta_base_aplicacion() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def obtener_carpeta_configuracion_google() -> Path:
+    return obtener_carpeta_base_aplicacion() / "config"
+
+
+def buscar_archivo_credenciales_google() -> Optional[Path]:
+    ruta_env = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    if ruta_env:
+        return Path(ruta_env)
+
+    carpeta_config = obtener_carpeta_configuracion_google()
+    for patron in PATRONES_CREDENCIALES_GOOGLE:
+        archivos = sorted(carpeta_config.glob(patron), key=lambda ruta: ruta.name.lower())
+        if archivos:
+            return archivos[0]
+    return None
+
+
+def obtener_ruta_token_google() -> Path:
+    ruta_env = os.environ.get("GOOGLE_OAUTH_TOKEN")
+    if ruta_env:
+        return Path(ruta_env)
+    return obtener_carpeta_configuracion_google() / NOMBRE_TOKEN_GOOGLE
+
+
+def autenticar_google_sheets_oauth(
+    archivo_credenciales: Optional[Path] = None,
+    archivo_token: Optional[Path] = None,
+    alcances: Optional[List[str]] = None,
+    forzar_login: bool = False,
+):
+    try:
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except Exception as exc:
+        raise RuntimeError("Faltan librerias Google para usar OAuth. Instala google-auth y google-auth-oauthlib.") from exc
+
+    alcances_google = list(alcances or ALCANCES_GOOGLE_SHEETS)
+    ruta_credenciales = archivo_credenciales or buscar_archivo_credenciales_google()
+    ruta_token = archivo_token or obtener_ruta_token_google()
+    carpeta_config = obtener_carpeta_configuracion_google()
+
+    if not ruta_credenciales or not ruta_credenciales.exists():
+        raise RuntimeError(
+            "Falta la configuracion de Google OAuth. "
+            f"Coloca el archivo client_secret_xxxxx.json dentro de: {carpeta_config}"
+        )
+
+    credenciales = None
+    if ruta_token.exists() and not forzar_login:
+        try:
+            credenciales = Credentials.from_authorized_user_file(str(ruta_token), alcances_google)
+        except Exception:
+            credenciales = None
+
+    if credenciales and not credenciales.has_scopes(alcances_google):
+        credenciales = None
+
+    if credenciales and credenciales.expired and credenciales.refresh_token:
+        try:
+            credenciales.refresh(GoogleAuthRequest())
+        except Exception:
+            credenciales = None
+
+    if not credenciales or not credenciales.valid:
+        flujo = InstalledAppFlow.from_client_secrets_file(str(ruta_credenciales), alcances_google)
+        credenciales = flujo.run_local_server(port=0, prompt="select_account")
+
+    ruta_token.parent.mkdir(parents=True, exist_ok=True)
+    ruta_token.write_text(credenciales.to_json(), encoding="utf-8")
+    return credenciales
 
 
 def _col_letter_to_index(letter: str) -> int:
@@ -214,21 +301,25 @@ class _XlsxWorkbookBytesReader:
 
 
 class GoogleSheetsWorkbookSourceService:
+    GOOGLE_SHEETS_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
     XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    EXCEL_COMPATIBLE_MIME_TYPES = {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel.sheet.macroenabled.12",
+    }
     DOWNLOAD_TIMEOUT_SECONDS = 180
     DOWNLOAD_RETRIES = 3
     DOWNLOAD_CHUNK_SIZE = 1024 * 512
 
     def __init__(self, oauth_client_secret_path: Optional[Path] = None, oauth_token_path: Optional[Path] = None):
-        appdata = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
-        self.oauth_client_secret_path = oauth_client_secret_path or Path(
-            os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", appdata / "RuteoApp" / "google_oauth_client.json")
-        )
-        self.oauth_token_path = oauth_token_path or Path(
-            os.environ.get("GOOGLE_OAUTH_TOKEN", appdata / "RuteoApp" / "google_token.json")
-        )
+        self.oauth_client_secret_path = oauth_client_secret_path or buscar_archivo_credenciales_google()
+        self.oauth_token_path = oauth_token_path or obtener_ruta_token_google()
+        self.enlaces_oauth_corporativo = set()
 
     def load_workbook(self, source_url: str) -> WorkbookModel:
+        if source_url in self.enlaces_oauth_corporativo:
+            return self.cargar_libro_con_oauth_gspread(source_url)
+
         spreadsheet_id = extract_spreadsheet_id(source_url)
         content = self._download_xlsx(spreadsheet_id)
         reader = _XlsxWorkbookBytesReader(content)
@@ -254,17 +345,53 @@ class GoogleSheetsWorkbookSourceService:
             print_sheet_name=print_sheet,
         )
 
-    def _download_xlsx(self, spreadsheet_id: str) -> bytes:
-        oauth_error = None
-        if self.oauth_client_secret_path.exists():
-            try:
-                return self._download_with_retries(
-                    lambda: self._download_xlsx_with_oauth_once(spreadsheet_id),
-                    "OAuth",
-                )
-            except Exception as exc:
-                oauth_error = exc
+    def cargar_libro_con_oauth_gspread(self, source_url: str, forzar_login: bool = False) -> WorkbookModel:
+        try:
+            credenciales = autenticar_google_sheets_oauth(
+                archivo_credenciales=self.oauth_client_secret_path,
+                archivo_token=self.oauth_token_path,
+                alcances=ALCANCES_GOOGLE_SHEETS,
+                forzar_login=forzar_login,
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"No se pudo iniciar sesion con Google. Revisa la carpeta de configuracion: {obtener_carpeta_configuracion_google()}"
+            ) from exc
 
+        try:
+            spreadsheet_id = extract_spreadsheet_id(source_url)
+            contenido = self._download_xlsx_with_oauth_once(spreadsheet_id, credentials=credenciales)
+            hojas = []
+            reader = _XlsxWorkbookBytesReader(contenido)
+            for info in reader.list_sheets():
+                filas_crudas = reader.read_sheet(info.path)
+                hojas.append(self._sheet_model_from_rows(info.name, filas_crudas))
+
+            if not hojas:
+                raise ValueError("Google Sheets no devolvio hojas para cargar.")
+
+            hoja_impresion = self._choose_print_sheet(hojas)
+            self.enlaces_oauth_corporativo.add(source_url)
+            return WorkbookModel(
+                source_type="GoogleSheets",
+                source_url=source_url,
+                source_path="",
+                workbook_name=f"Google Sheets {spreadsheet_id[:8]}",
+                loaded_at=datetime.now().isoformat(timespec="seconds"),
+                sheets=hojas,
+                active_sheet_name=hoja_impresion,
+                print_sheet_name=hoja_impresion,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "No se pudo abrir el Google Sheets con la cuenta Google autorizada. "
+                "Verifica que esa cuenta tenga permiso sobre el archivo. "
+                "Si autorizaste otra cuenta, presiona Volver a intentar para iniciar sesion nuevamente."
+            ) from exc
+
+    def _download_xlsx(self, spreadsheet_id: str) -> bytes:
         try:
             return self._download_with_retries(
                 lambda: self._download_public_xlsx_once(spreadsheet_id),
@@ -273,13 +400,6 @@ class GoogleSheetsWorkbookSourceService:
         except Exception as exc:
             if str(exc) == INCOMPLETE_READ_MESSAGE:
                 raise RuntimeError(INCOMPLETE_READ_MESSAGE) from exc
-            if oauth_error:
-                if str(oauth_error) == INCOMPLETE_READ_MESSAGE:
-                    raise RuntimeError(INCOMPLETE_READ_MESSAGE) from exc
-                raise RuntimeError(
-                    "No se pudo cargar Google Sheets con OAuth ni como archivo compartido. "
-                    f"OAuth: {oauth_error}. Compartido: {exc}"
-                ) from exc
             raise
 
     def _download_with_retries(self, download_action, source_label: str) -> bytes:
@@ -347,32 +467,33 @@ class GoogleSheetsWorkbookSourceService:
                 "Google no permitió descargar el libro. Verifica que el archivo esté compartido o configura OAuth."
             ) from exc
 
-    def _download_xlsx_with_oauth_once(self, spreadsheet_id: str) -> bytes:
+    def _download_xlsx_with_oauth_once(self, spreadsheet_id: str, credentials=None) -> bytes:
         try:
-            from google.auth.transport.requests import Request as GoogleAuthRequest
-            from google.oauth2.credentials import Credentials
-            from google_auth_oauthlib.flow import InstalledAppFlow
             from googleapiclient.discovery import build
             from googleapiclient.http import MediaIoBaseDownload
         except Exception as exc:
-            raise RuntimeError(
-                "Faltan librerías Google. Instala google-api-python-client, google-auth y google-auth-oauthlib."
-            ) from exc
+            raise RuntimeError("Faltan librerías Google. Instala google-api-python-client.") from exc
 
-        scopes = ["https://www.googleapis.com/auth/drive.readonly"]
-        credentials = None
-        if self.oauth_token_path.exists():
-            credentials = Credentials.from_authorized_user_file(str(self.oauth_token_path), scopes)
-        if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(GoogleAuthRequest())
-        if not credentials or not credentials.valid:
-            flow = InstalledAppFlow.from_client_secrets_file(str(self.oauth_client_secret_path), scopes)
-            credentials = flow.run_local_server(port=0)
-        self.oauth_token_path.parent.mkdir(parents=True, exist_ok=True)
-        self.oauth_token_path.write_text(credentials.to_json(), encoding="utf-8")
+        if credentials is None:
+            credentials = autenticar_google_sheets_oauth(
+                archivo_credenciales=self.oauth_client_secret_path,
+                archivo_token=self.oauth_token_path,
+                alcances=ALCANCES_GOOGLE_SHEETS,
+            )
 
         service = build("drive", "v3", credentials=credentials)
-        request = service.files().export_media(fileId=spreadsheet_id, mimeType=self.XLSX_MIME_TYPE)
+        metadata = service.files().get(fileId=spreadsheet_id, fields="name,mimeType").execute()
+        mime_type = metadata.get("mimeType", "")
+        if mime_type == self.GOOGLE_SHEETS_MIME_TYPE:
+            request = service.files().export_media(fileId=spreadsheet_id, mimeType=self.XLSX_MIME_TYPE)
+        elif mime_type in self.EXCEL_COMPATIBLE_MIME_TYPES:
+            request = service.files().get_media(fileId=spreadsheet_id)
+        else:
+            raise RuntimeError(
+                "El archivo de Google Drive no es Google Sheets ni Excel compatible. "
+                f"Tipo detectado: {mime_type or 'desconocido'}."
+            )
+
         buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(buffer, request)
         done = False
@@ -417,6 +538,8 @@ class GoogleSheetsConnectWindow(QDialog):
         self.service = service or GoogleSheetsWorkbookSourceService()
         self.loaded_workbook: Optional[WorkbookModel] = None
         self._current_thread: Optional[threading.Thread] = None
+        self._forzar_login_oauth = False
+        self._ultimo_intento_oauth = False
 
         self.load_finished.connect(self._on_load_finished)
         self.load_failed.connect(self._on_load_failed)
@@ -427,9 +550,16 @@ class GoogleSheetsConnectWindow(QDialog):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(10)
 
-        info = QLabel("Pega el enlace del archivo de Google Sheets compartido")
+        info = QLabel("Pega el enlace completo del archivo de Google Sheets")
         info.setWordWrap(True)
         layout.addWidget(info)
+
+        self.selector_tipo_conexion = QComboBox()
+        self.selector_tipo_conexion.addItems([
+            "Enlace compartido / publico",
+            "Cuenta Google corporativa / OAuth",
+        ])
+        layout.addWidget(self.selector_tipo_conexion)
 
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("Enlace de Google Sheets")
@@ -450,7 +580,7 @@ class GoogleSheetsConnectWindow(QDialog):
         self.load_button = QPushButton("Cargar libro")
         self.cancel_button = QPushButton("Cancelar")
         self.load_button.setObjectName("botonPrimario")
-        self.connect_button.clicked.connect(self._validate_link)
+        self.connect_button.clicked.connect(self._conectar_google)
         self.load_button.clicked.connect(self._load_workbook)
         self.cancel_button.clicked.connect(self.reject)
         buttons.addStretch(1)
@@ -469,6 +599,12 @@ class GoogleSheetsConnectWindow(QDialog):
         note.setWordWrap(True)
         layout.addWidget(note)
 
+    def _conectar_google(self, _checked: bool = False):
+        if self.selector_tipo_conexion.currentIndex() == 1:
+            self._load_workbook(forzar_login=True)
+            return
+        self._validate_link()
+
     def _validate_link(self) -> Optional[str]:
         try:
             spreadsheet_id = extract_spreadsheet_id(self.url_input.text())
@@ -479,17 +615,27 @@ class GoogleSheetsConnectWindow(QDialog):
         self.status_label.setText(f"Enlace válido. Spreadsheet ID: {spreadsheet_id}")
         return spreadsheet_id
 
-    def _load_workbook(self):
+    def _load_workbook(self, forzar_login: bool = False):
         spreadsheet_id = self._validate_link()
         if not spreadsheet_id:
             return
         source_url = self.url_input.text().strip()
+        usar_oauth_corporativo = self.selector_tipo_conexion.currentIndex() == 1
+        forzar_login_oauth = usar_oauth_corporativo and (forzar_login or self._forzar_login_oauth)
+        self._ultimo_intento_oauth = usar_oauth_corporativo
+        self._forzar_login_oauth = False
         self.loaded_workbook = None
         self._set_loading(True)
 
         def runner():
             try:
-                workbook = self.service.load_workbook(source_url)
+                if usar_oauth_corporativo:
+                    workbook = self.service.cargar_libro_con_oauth_gspread(
+                        source_url,
+                        forzar_login=forzar_login_oauth,
+                    )
+                else:
+                    workbook = self.service.load_workbook(source_url)
             except Exception as exc:
                 self.load_failed.emit(str(exc))
             else:
@@ -502,6 +648,7 @@ class GoogleSheetsConnectWindow(QDialog):
         self.connect_button.setEnabled(not loading)
         self.load_button.setEnabled(not loading)
         self.url_input.setEnabled(not loading)
+        self.selector_tipo_conexion.setEnabled(not loading)
         self.load_button.setText("Cargando..." if loading else "Cargar libro")
         self.progress.setRange(0, 0 if loading else 1)
         if not loading:
@@ -511,12 +658,15 @@ class GoogleSheetsConnectWindow(QDialog):
     def _on_load_finished(self, workbook: WorkbookModel):
         self._set_loading(False)
         self.loaded_workbook = workbook
+        self._forzar_login_oauth = False
         self.status_label.setText(f"Libro cargado: {len(workbook.sheets)} hoja(s)")
         self.accept()
 
     def _on_load_failed(self, message: str):
         self._set_loading(False)
         self.loaded_workbook = None
+        if self._ultimo_intento_oauth:
+            self._forzar_login_oauth = True
         self.status_label.setText(message or "No se pudo cargar el libro.")
         self.load_button.setText("Volver a intentar")
         QMessageBox.critical(self, "Google Sheets", message)

@@ -9,9 +9,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-APP_NAME = "RUTEO_PDF"
+APP_NAME = "Aplicativo CyR"
+ENTRY_SCRIPT = ROOT / "main.py"
 DIST_DIR = ROOT / "dist"
-EXE_PATH = DIST_DIR / f"{APP_NAME}.exe"
+APP_DIST_DIR = DIST_DIR / APP_NAME
+EXE_PATH = APP_DIST_DIR / f"{APP_NAME}.exe"
+PLANTILLA_CYR = ROOT / "assets" / "plantillas" / "cyr.pdf"
+CONFIG_DIR = ROOT / "config"
 
 
 def _check_import(module_name: str, pip_name: str, missing: list[str]) -> None:
@@ -26,6 +30,7 @@ def check_dependencies() -> None:
     _check_import("PyInstaller", "pyinstaller", missing)
     _check_import("PySide6", "PySide6", missing)
     _check_import("reportlab", "reportlab", missing)
+    _check_import("pypdf", "pypdf", missing)
     _check_import("googleapiclient", "google-api-python-client", missing)
     _check_import("google.auth", "google-auth", missing)
     _check_import("google_auth_oauthlib", "google-auth-oauthlib", missing)
@@ -51,9 +56,11 @@ def clean_previous_build() -> None:
 
 
 def build_exe() -> None:
-    icon_path = ROOT / "assets" / "app_icon.ico"
+    icon_path = ROOT / "assets" / "app_icon_v3.png"
     if not icon_path.exists():
         raise FileNotFoundError(f"No existe el icono: {icon_path}")
+    if not PLANTILLA_CYR.exists():
+        raise FileNotFoundError(f"No existe la plantilla de ordenes CyR: {PLANTILLA_CYR}")
 
     command = [
         sys.executable,
@@ -61,17 +68,25 @@ def build_exe() -> None:
         "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--onefile",
+        "--onedir",
         "--windowed",
         "--name",
         APP_NAME,
+        "--exclude-module",
+        "PySide6.QtQuick",
+        "--exclude-module",
+        "PySide6.QtQml",
+        "--exclude-module",
+        "PySide6.QtQuickWidgets",
+        "--exclude-module",
+        "PySide6.QtQuickControls2",
         "--icon",
         str(icon_path),
         "--add-data",
         f"{ROOT / 'VERSION'}{os.pathsep}.",
         "--add-data",
         f"{ROOT / 'assets'}{os.pathsep}assets",
-        str(ROOT / "app_ruteo_pdf.py"),
+        str(ENTRY_SCRIPT),
     ]
     subprocess.run(command, cwd=ROOT, check=True)
 
@@ -81,7 +96,14 @@ def build_exe() -> None:
     for support_file in ("LEEME_PRIMERO.txt", "VERSION"):
         source = ROOT / support_file
         if source.exists():
-            shutil.copy2(source, DIST_DIR / support_file)
+            shutil.copy2(source, APP_DIST_DIR / support_file)
+
+    target_config = APP_DIST_DIR / "config"
+    target_config.mkdir(parents=True, exist_ok=True)
+    if CONFIG_DIR.exists():
+        for pattern in ("client_secret*.json", "google_oauth*.json"):
+            for source in CONFIG_DIR.glob(pattern):
+                shutil.copy2(source, target_config / source.name)
 
     spec_path = ROOT / f"{APP_NAME}.spec"
     if spec_path.exists():
@@ -103,7 +125,8 @@ def main() -> int:
     print("OK. EXE listo con dependencias incluidas:")
     print(EXE_PATH)
     print("")
-    print("El usuario final solo debe abrir RUTEO_PDF.exe. No se necesita BAT ni Python instalado.")
+    print(f"El usuario final solo debe abrir {APP_NAME}.exe dentro de la carpeta {APP_NAME}.")
+    print("No se necesita BAT ni Python instalado.")
     return 0
 
 

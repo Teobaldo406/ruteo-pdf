@@ -6,8 +6,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 
 ROOT = Path(__file__).resolve().parent
-APP_NAME = "RUTEO_PDF"
-EXE_PATH = ROOT / "dist" / f"{APP_NAME}.exe"
+APP_NAME = "Aplicativo CyR"
+APP_DIST_DIR = ROOT / "dist" / APP_NAME
+EXE_PATH = APP_DIST_DIR / f"{APP_NAME}.exe"
 VERSION_PATH = ROOT / "VERSION"
 README_PATH = ROOT / "LEEME_PRIMERO.txt"
 
@@ -24,11 +25,9 @@ def main() -> int:
         zip_path.unlink()
 
     with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as archive:
-        archive.write(EXE_PATH, f"{APP_NAME}.exe")
-        if README_PATH.exists():
-            archive.write(README_PATH, "LEEME_PRIMERO.txt")
-        if VERSION_PATH.exists():
-            archive.write(VERSION_PATH, "VERSION")
+        for path in APP_DIST_DIR.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(APP_DIST_DIR.parent))
 
     print("")
     print("OK. ZIP listo para GitHub Releases:")

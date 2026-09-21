@@ -1,10 +1,10 @@
-# RUTEO PDF - GitHub, EXE y actualizaciones
+# Aplicativo CyR - GitHub, EXE y actualizaciones
 
 ## Objetivo
 
 El usuario final no debe usar archivos BAT ni instalar Python. La entrega debe ser un ZIP con:
 
-- `RUTEO_PDF.exe`
+- `Aplicativo CyR.exe`
 - `LEEME_PRIMERO.txt`
 - `VERSION`
 
@@ -36,7 +36,7 @@ Si esta carpeta todavia no es un repo valido:
 ```powershell
 git init
 git add .
-git commit -m "Version inicial RUTEO PDF"
+git commit -m "Version inicial Aplicativo CyR"
 git branch -M main
 git remote add origin https://github.com/TU_USUARIO/ruteo-pdf.git
 git push -u origin main
@@ -86,7 +86,7 @@ git push origin v0.1.1
 5. En GitHub:
    - Ir a `Releases`.
    - Crear release con tag `v0.1.1`.
-   - Adjuntar `RUTEO_PDF_v0.1.1.zip`.
+   - Adjuntar `Aplicativo CyR_v0.1.1.zip`.
 
 ## Como recibe actualizaciones el usuario
 

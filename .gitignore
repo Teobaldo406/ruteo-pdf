@@ -4,8 +4,13 @@ __pycache__/
 *.pyd
 .Python
 .venv/
+.venv-build313/
 venv/
 env/
+.vs/
+.vscode/
+.pytest_cache/
+.ruff_cache/
 
 build/
 dist/
@@ -13,6 +18,9 @@ dist/
 *.spec.bak
 *.zip
 RUTEO_PDF_v*/
+Aplicativo CyR_v*/
+RESULTADOS_*/
+error_inicio.txt
 *.log
 
 tmp/
@@ -26,3 +34,6 @@ google_oauth_client.json
 *.xlsm
 *.csv
 *.pdf
+!assets/plantillas/cyr.pdf
+
+config/

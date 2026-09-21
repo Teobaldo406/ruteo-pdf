@@ -1,0 +1,29 @@
+[
+  {
+    "TemplateId": "19923f1b-09ab-42bc-95e2-bf3e0d216e94",
+    "TemplateName": "Plantilla moderna",
+    "TemplateType": "Modern",
+    "IsDefault": true,
+    "CompanyName": "COSORCION WAS LIMA",
+    "Ruc": "15255626",
+    "Area": "PERSUASIVAS",
+    "ProjectName": "SACO",
+    "ReportTitle": "ORDENES DE TRABAJO",
+    "Subtitle": "ORDENES DE TRABAJO",
+    "ResponsibleName": "",
+    "LogoPath": "",
+    "PrimaryColor": "#0000ff",
+    "SecondaryColor": "#bac87a",
+    "FontFamily": "Segoe UI",
+    "HeaderFontSize": 14,
+    "BodyFontSize": 9,
+    "ShowLogo": false,
+    "ShowDate": true,
+    "ShowTotalAssigned": true,
+    "ShowOperatorSignature": false,
+    "ShowSupervisorSignature": false,
+    "ObservationsText": "",
+    "HeaderStyle": "Corporativo",
+    "UpdatedAt": "2026-06-29T09:43:15"
+  }
+]

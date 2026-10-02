@@ -106,6 +106,7 @@ from google_sheets_import import GoogleSheetsConnectWindow, GoogleSheetsWorkbook
 from modulo_txt_cyr import ResultadoTxtCyr, buscar_hoja, generar_txt_cyr
 from extractor_ordenes_pagina import PaginaExtractorOrdenes
 from depuracion_ot_pagina import PaginaDepuracionOT
+from actualizacion_datos_pagina import PaginaProcesamientoActualizaciones
 from fondo_modulos import FondoModulosWidget
 from workbook_models import SheetModel, WorkbookModel
 from app_update import CURRENT_VERSION, check_for_updates, preparar_actualizacion_automatica
@@ -1801,12 +1802,14 @@ class VentanaRuteo(QMainWindow):
         self.accion_pagina_txt_cyr = QAction("TXT CyR", self)
         self.accion_pagina_extractor = QAction("Extractor de órdenes", self)
         self.accion_pagina_depuracion_ot = QAction("Depuración OT", self)
+        self.accion_pagina_actualizaciones = QAction("Procesamiento de actualizaciones", self)
 
         acciones_principales = (
             (self.accion_pagina_ruteo, "inicio"),
             (self.accion_pagina_txt_cyr, "texto"),
             (self.accion_pagina_extractor, "buscar"),
             (self.accion_pagina_depuracion_ot, "depurar"),
+            (self.accion_pagina_actualizaciones, "actualizaciones"),
         )
         self.grupo_modulos = QActionGroup(self)
         self.grupo_modulos.setExclusive(True)
@@ -1820,6 +1823,9 @@ class VentanaRuteo(QMainWindow):
         self.accion_pagina_txt_cyr.triggered.connect(lambda _checked=False: self.mostrar_pagina_txt_cyr())
         self.accion_pagina_extractor.triggered.connect(lambda _checked=False: self.mostrar_pagina_extractor_ordenes())
         self.accion_pagina_depuracion_ot.triggered.connect(lambda _checked=False: self.mostrar_pagina_depuracion_ot())
+        self.accion_pagina_actualizaciones.triggered.connect(
+            lambda _checked=False: self.mostrar_pagina_procesamiento_actualizaciones()
+        )
 
         self.accion_importar_excel = QAction("Desde archivo Excel", self)
         self.accion_importar_google = QAction("Desde Google Sheets", self)
@@ -2082,6 +2088,8 @@ class VentanaRuteo(QMainWindow):
         self.stack_paginas.addWidget(self.pagina_extractor_ordenes)
         self.pagina_depuracion_ot = PaginaDepuracionOT(self)
         self.stack_paginas.addWidget(self.pagina_depuracion_ot)
+        self.pagina_procesamiento_actualizaciones = PaginaProcesamientoActualizaciones(self)
+        self.stack_paginas.addWidget(self.pagina_procesamiento_actualizaciones)
         self.stack_paginas.setCurrentWidget(self.pagina_ruteo)
         self.busy_overlay = BusyOverlay(self)
 
@@ -2526,6 +2534,7 @@ class VentanaRuteo(QMainWindow):
             "texto": "\ue8a5",
             "buscar": "\ue721",
             "depurar": "\ue71c",
+            "actualizaciones": "\ue895",
             "ayuda": "\ue897",
         }
         if not hasattr(self, "_familia_iconos_navegacion"):
@@ -2577,6 +2586,10 @@ class VentanaRuteo(QMainWindow):
             (getattr(self, "pagina_txt_cyr", None), self.accion_pagina_txt_cyr),
             (getattr(self, "pagina_extractor_ordenes", None), self.accion_pagina_extractor),
             (getattr(self, "pagina_depuracion_ot", None), self.accion_pagina_depuracion_ot),
+            (
+                getattr(self, "pagina_procesamiento_actualizaciones", None),
+                self.accion_pagina_actualizaciones,
+            ),
         )
         for pagina, accion in mapa_paginas:
             if pagina is pagina_actual:
@@ -2694,6 +2707,8 @@ class VentanaRuteo(QMainWindow):
             self.accion_pagina_txt_cyr.setEnabled(enabled)
         if hasattr(self, "accion_pagina_depuracion_ot"):
             self.accion_pagina_depuracion_ot.setEnabled(enabled)
+        if hasattr(self, "accion_pagina_actualizaciones"):
+            self.accion_pagina_actualizaciones.setEnabled(enabled)
         self.accion_actualizar_google.setEnabled(
             enabled and bool(self.current_workbook and self.current_workbook.source_type == "GoogleSheets")
         )
@@ -3560,6 +3575,15 @@ class VentanaRuteo(QMainWindow):
         if hasattr(self, "stack_paginas") and hasattr(self, "pagina_depuracion_ot"):
             self.stack_paginas.setCurrentWidget(self.pagina_depuracion_ot)
             self._marcar_modulo_activo(self.accion_pagina_depuracion_ot)
+
+    def mostrar_pagina_procesamiento_actualizaciones(self):
+        if self.is_busy:
+            self._restaurar_modulo_activo()
+            QMessageBox.information(self, "Proceso en ejecución", "Espere a que termine el proceso actual.")
+            return
+        if hasattr(self, "stack_paginas") and hasattr(self, "pagina_procesamiento_actualizaciones"):
+            self.stack_paginas.setCurrentWidget(self.pagina_procesamiento_actualizaciones)
+            self._marcar_modulo_activo(self.accion_pagina_actualizaciones)
 
     def seleccionar_archivo_txt_cyr(self):
         path, _ = QFileDialog.getOpenFileName(

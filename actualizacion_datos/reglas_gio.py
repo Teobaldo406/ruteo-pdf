@@ -3,18 +3,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import re
 import unicodedata
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional
 
 from .modelos import CategoriaResultado, RegistroProcesamiento, TablaDatos
 
 
-HOJAS_MATRIZ_GIO = {"RESUMEN", "REGLAS_GIO", "COMBINACIONES_GIO", "GUIA_USO"}
+HOJAS_MATRIZ_GIO = {
+    "RESUMEN", "REGLAS_GIO", "COMBINACIONES_GIO", "GUIA_USO", "MATRIZ_TIPOLOGIAS"
+}
+
+COLUMNAS_MATRIZ_TIPOLOGIAS = {
+    "TIPO", "ACC", "CIERRE_EFECTIVO", "REAPERTURA_ESPERADA",
+    "RESULTADO", "ACTIVO", "CONDICION",
+}
 
 
 def normalizar_texto_gio(valor: object) -> str:
@@ -28,6 +35,12 @@ def normalizar_texto_gio(valor: object) -> str:
 
 def normalizar_accion_gio(valor: object) -> str:
     texto = "" if valor is None else str(valor).strip()
+    # Algunos orígenes representan los códigos operativos separando la
+    # centena con punto o guion (5.06 / 5-06). Se reconstruye el código como
+    # texto y se conserva su familia: 5xx nunca se transforma en 6xx.
+    codigo_separado = re.fullmatch(r"(\d)[.-](\d{2})", texto)
+    if codigo_separado:
+        return "".join(codigo_separado.groups())
     if re.fullmatch(r"[+-]?\d+\.0", texto):
         return texto[:-2]
     if "E" in texto.upper():
@@ -56,6 +69,8 @@ class ReglaGio:
     motivo: str
     destino: str
     activa: bool
+    accion_cierre: str = ""
+    acciones_reapertura: tuple[str, ...] = ()
 
     @property
     def descripcion_accion(self) -> str:
@@ -100,12 +115,58 @@ class ReglaGio:
 
 
 @dataclass(frozen=True)
+class ReglaTipologia:
+    tipo: str
+    accion: str
+    cierre_efectivo: str
+    reapertura_esperada: str
+    resultado: str
+    condicion: str
+    activa: bool
+    numero_fila: int
+    clasificacion: str = ""
+    requiere_cierre_anterior: bool = False
+    requiere_cierre_efectivo: bool = False
+    validar_equivalencia: bool = True
+    validar_diferencia: bool = True
+
+    @property
+    def tipos(self) -> tuple[str, ...]:
+        return tuple(
+            normalizar_texto_gio(valor)
+            for valor in self.tipo.split("|") if valor.strip()
+        )
+
+
+@dataclass(frozen=True)
+class MatrizTipologias:
+    reglas: tuple[ReglaTipologia, ...]
+
+    def buscar(self, tipo: str, accion: str) -> tuple[ReglaTipologia, ...]:
+        tipo_normalizado = normalizar_texto_gio(tipo)
+        accion_normalizada = normalizar_accion_gio(accion)
+        return tuple(
+            regla for regla in self.reglas
+            if tipo_normalizado in regla.tipos and regla.accion == accion_normalizada
+        )
+
+    def tipos_activos_para_accion(self, accion: str) -> tuple[str, ...]:
+        accion_normalizada = normalizar_accion_gio(accion)
+        return tuple(sorted({
+            tipo
+            for regla in self.reglas if regla.activa and regla.accion == accion_normalizada
+            for tipo in regla.tipos
+        }))
+
+@dataclass(frozen=True)
 class MatrizReglasGio:
     reglas: tuple[ReglaGio, ...]
     combinaciones: frozenset[tuple[str, str, str]]
     hojas: tuple[str, ...]
     ruta: str = ""
     fecha_modificacion: str = ""
+    tipologias: Optional[MatrizTipologias] = None
+    tablas: Dict[str, TablaDatos] = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def reglas_activas(self) -> tuple[ReglaGio, ...]:
@@ -125,6 +186,8 @@ def construir_matriz_gio(
     combinaciones: TablaDatos,
     hojas: Iterable[str],
     ruta: Optional[Path] = None,
+    tabla_tipologias: Optional[TablaDatos] = None,
+    tablas: Optional[Dict[str, TablaDatos]] = None,
 ) -> MatrizReglasGio:
     resultado = []
     errores: list[str] = []
@@ -198,6 +261,12 @@ def construir_matriz_gio(
             acc_min=minimo, acc_max=maximo,
             resultado=_valor(fila, "RESULTADO"), categoria=_valor(fila, "CATEGORIA"),
             motivo=_valor(fila, "MOTIVO"), destino=_valor(fila, "DESTINO"), activa=activo,
+            accion_cierre=normalizar_accion_gio(_valor(fila, "ACCION_CIERRE")),
+            acciones_reapertura=tuple(
+                normalizar_accion_gio(valor)
+                for valor in re.split(r"[|,;]", _valor(fila, "ACCIONES_REAPERTURA"))
+                if valor.strip()
+            ),
         ))
     if errores:
         raise ValueError("MATRIZ CON ERRORES:\n- " + "\n- ".join(errores))
@@ -218,10 +287,84 @@ def construir_matriz_gio(
         datetime.fromtimestamp(ruta_matriz.stat().st_mtime).strftime("%d/%m/%Y %H:%M:%S")
         if ruta_matriz and ruta_matriz.exists() else ""
     )
+    tipologias = construir_matriz_tipologias(tabla_tipologias) if tabla_tipologias else None
     return MatrizReglasGio(
         tuple(resultado), observadas, tuple(hojas),
         str(ruta_matriz) if ruta_matriz else "", fecha_modificacion,
+        tipologias, dict(tablas or {}),
     )
+
+
+def construir_matriz_tipologias(tabla: TablaDatos) -> MatrizTipologias:
+    faltantes = sorted(COLUMNAS_MATRIZ_TIPOLOGIAS - set(tabla.encabezados))
+    if faltantes:
+        raise ValueError(
+            "La hoja MATRIZ_TIPOLOGIAS no contiene las columnas obligatorias: "
+            + ", ".join(faltantes)
+        )
+    reglas: list[ReglaTipologia] = []
+    errores: list[str] = []
+    for numero, fila in enumerate(tabla.filas, 2):
+        if not any(_valor(fila, columna) for columna in tabla.encabezados):
+            continue
+        activo = normalizar_texto_gio(_valor(fila, "ACTIVO"))
+        if activo not in {"SI", "NO"}:
+            errores.append(
+                f"MATRIZ_TIPOLOGIAS fila {numero}: ACTIVO debe ser SI o NO."
+            )
+        tipo = normalizar_texto_gio(_valor(fila, "TIPO"))
+        accion = normalizar_accion_gio(_valor(fila, "ACC"))
+        if not tipo or not accion:
+            errores.append(
+                f"MATRIZ_TIPOLOGIAS fila {numero}: TIPO y ACC son obligatorios."
+            )
+        clasificacion = normalizar_texto_gio(_valor(fila, "CLASIFICACION"))
+        controles = {}
+        if clasificacion == "IMPOSIBILIDAD_REAPERTURA":
+            for columna in (
+                "REQUIERE_CIERRE_ANTERIOR", "REQUIERE_CIERRE_EFECTIVO",
+                "VALIDAR_EQUIVALENCIA", "VALIDAR_DIFERENCIA",
+            ):
+                valor = normalizar_texto_gio(_valor(fila, columna))
+                if valor not in {"SI", "NO"}:
+                    errores.append(
+                        f"MATRIZ_TIPOLOGIAS fila {numero}: {columna} debe ser SI o NO "
+                        "para IMPOSIBILIDAD_REAPERTURA."
+                    )
+                controles[columna] = valor == "SI"
+        reglas.append(ReglaTipologia(
+            tipo=tipo,
+            accion=accion,
+            cierre_efectivo=normalizar_accion_gio(_valor(fila, "CIERRE_EFECTIVO")),
+            reapertura_esperada=normalizar_accion_gio(_valor(fila, "REAPERTURA_ESPERADA")),
+            resultado=_valor(fila, "RESULTADO"),
+            condicion=_valor(fila, "CONDICION"),
+            activa=activo == "SI",
+            numero_fila=numero,
+            clasificacion=clasificacion,
+            requiere_cierre_anterior=controles.get("REQUIERE_CIERRE_ANTERIOR", False),
+            requiere_cierre_efectivo=controles.get("REQUIERE_CIERRE_EFECTIVO", False),
+            validar_equivalencia=controles.get("VALIDAR_EQUIVALENCIA", True),
+            validar_diferencia=controles.get("VALIDAR_DIFERENCIA", True),
+        ))
+    activas: dict[tuple[str, str], ReglaTipologia] = {}
+    for regla in reglas:
+        if not regla.activa:
+            continue
+        for tipo in regla.tipos:
+            clave = (tipo, regla.accion)
+            anterior = activas.get(clave)
+            if anterior:
+                errores.append(
+                    "MATRIZ_TIPOLOGIAS contiene reglas activas ambiguas para "
+                    f"TIPO={tipo}, ACC={regla.accion} en filas "
+                    f"{anterior.numero_fila} y {regla.numero_fila}."
+                )
+            else:
+                activas[clave] = regla
+    if errores:
+        raise ValueError("MATRIZ CON ERRORES:\n- " + "\n- ".join(errores))
+    return MatrizTipologias(tuple(reglas))
 
 
 def _buscar_contradicciones(reglas: list[ReglaGio]) -> list[str]:

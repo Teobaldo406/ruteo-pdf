@@ -13,7 +13,11 @@ from actualizacion_datos.modelos import (
     RegistroProcesamiento,
     TablaDatos,
 )
-from actualizacion_datos.reglas_gio import construir_matriz_gio, evaluar_regla_gio
+from actualizacion_datos.reglas_gio import (
+    construir_matriz_gio,
+    evaluar_regla_gio,
+    normalizar_accion_gio,
+)
 from actualizacion_datos.cierres import procesar_cierres
 
 
@@ -21,6 +25,10 @@ COLUMNAS_REGLAS = [
     "ID_REGLA", "PRIORIDAD", "RGLA", "COINCIDENCIA_OBS", "PATRON_OBS",
     "CONDICION_ACC", "ACC_LISTA", "ACC_MIN", "ACC_MAX", "RESULTADO",
     "CATEGORIA", "MOTIVO", "DESTINO", "ACTIVO",
+]
+COLUMNAS_TIPOLOGIAS = [
+    "TIPO", "ACC", "CIERRE_EFECTIVO", "REAPERTURA_ESPERADA",
+    "RESULTADO", "ACTIVO", "CONDICION",
 ]
 
 
@@ -53,8 +61,9 @@ def registro(tipo, observacion, accion):
     )
 
 
-def crear_libro_incompleto(ruta, hojas=None):
+def crear_libro_incompleto(ruta, hojas=None, encabezados_personalizados=None):
     hojas = hojas or ("RESUMEN", "COMBINACIONES_GIO", "GUIA_USO")
+    encabezados_personalizados = encabezados_personalizados or {}
     with zipfile.ZipFile(ruta, "w") as archivo:
         archivo.writestr(
             "[Content_Types].xml",
@@ -80,13 +89,43 @@ def crear_libro_incompleto(ruta, hojas=None):
             f"{relaciones}</Relationships>",
         )
         for indice in range(1, len(hojas) + 1):
+            nombre = hojas[indice - 1]
+            encabezados = encabezados_personalizados.get(nombre)
+            if encabezados is None:
+                encabezados = {
+                    "REGLAS_GIO": COLUMNAS_REGLAS,
+                    "COMBINACIONES_GIO": ["RGLA", "OBSERVACION", "ncod_causa"],
+                    "MATRIZ_TIPOLOGIAS": COLUMNAS_TIPOLOGIAS,
+                }.get(nombre, [])
+            celdas = "".join(
+                f'<c r="{chr(65 + posicion)}1" t="inlineStr"><is><t>{valor}</t></is></c>'
+                for posicion, valor in enumerate(encabezados)
+            )
+            fila = f'<row r="1">{celdas}</row>' if celdas else ""
             archivo.writestr(
                 f"xl/worksheets/sheet{indice}.xml",
-                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>',
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                f'<sheetData>{fila}</sheetData></worksheet>',
             )
 
 
 class PruebasMatrizReglasGio(unittest.TestCase):
+    def test_normaliza_codigos_separados_sin_cambiar_familia(self):
+        casos = {
+            "5-06": "506",
+            "5.06": "506",
+            "506": "506",
+            "506.0": "506",
+            "6-06": "606",
+            "6.06": "606",
+            "606": "606",
+            "606.0": "606",
+        }
+        self.assertEqual(
+            {valor: normalizar_accion_gio(valor) for valor in casos},
+            casos,
+        )
+
     def setUp(self):
         self.matriz = matriz([
             regla("GIO-010", 10, "C", "CONTIENE", "CIERRE SIMPLE", "LISTA", "511"),
@@ -251,24 +290,14 @@ class PruebasMatrizReglasGio(unittest.TestCase):
         self.assertEqual(fila.datos_normalizados["OBSERVACION_ORIGINAL"], "  obturación   completa ")
 
     def test_libro_con_todas_las_hojas_se_carga(self):
-        hojas = ("RESUMEN", "REGLAS_GIO", "COMBINACIONES_GIO", "GUIA_USO")
+        hojas = ("RESUMEN", "REGLAS_GIO", "COMBINACIONES_GIO", "GUIA_USO", "MATRIZ_TIPOLOGIAS")
         with TemporaryDirectory() as temporal:
             ruta = Path(temporal) / "matriz_prueba.xlsx"
             crear_libro_incompleto(ruta, hojas)
-            tabla_reglas = TablaDatos(
-                ruta, COLUMNAS_REGLAS,
-                [regla("PRUEBA", 1, "V", "CUALQUIERA", "", "LISTA", "524")],
-                FormatoArchivo("xlsx"),
-            )
-            tabla_combinaciones = TablaDatos(
-                ruta, ["RGLA", "OBSERVACION", "ncod_causa"], [], FormatoArchivo("xlsx")
-            )
-            with patch(
-                "actualizacion_datos.lectores.leer_xlsx",
-                side_effect=[tabla_reglas, tabla_combinaciones],
-            ):
-                cargada = leer_matriz_reglas_gio(ruta)
+            cargada = leer_matriz_reglas_gio(ruta)
             self.assertEqual(set(cargada.hojas), set(hojas))
+            self.assertIsNotNone(cargada.tipologias)
+            self.assertEqual(set(cargada.tablas), set(hojas))
 
     def test_ausencia_de_reglas_gio_bloquea(self):
         with TemporaryDirectory() as temporal:
@@ -278,20 +307,13 @@ class PruebasMatrizReglasGio(unittest.TestCase):
                 leer_matriz_reglas_gio(ruta)
 
     def test_excel_sin_columnas_obligatorias_bloquea(self):
-        hojas = ("RESUMEN", "REGLAS_GIO", "COMBINACIONES_GIO", "GUIA_USO")
+        hojas = ("RESUMEN", "REGLAS_GIO", "COMBINACIONES_GIO", "GUIA_USO", "MATRIZ_TIPOLOGIAS")
         with TemporaryDirectory() as temporal:
             ruta = Path(temporal) / "matriz_incompleta.xlsx"
-            crear_libro_incompleto(ruta, hojas)
-            tabla_incompleta = TablaDatos(
-                ruta, ["ID_REGLA"], [{"ID_REGLA": "UNO"}], FormatoArchivo("xlsx")
+            crear_libro_incompleto(
+                ruta, hojas, {"MATRIZ_TIPOLOGIAS": ["TIPO", "ACC"]}
             )
-            tabla_combinaciones = TablaDatos(
-                ruta, ["RGLA", "OBSERVACION", "ncod_causa"], [], FormatoArchivo("xlsx")
-            )
-            with patch(
-                "actualizacion_datos.lectores.leer_xlsx",
-                side_effect=[tabla_incompleta, tabla_combinaciones],
-            ), self.assertRaisesRegex(ValueError, "no contiene las columnas"):
+            with self.assertRaisesRegex(ValueError, "MATRIZ_TIPOLOGIAS no contiene"):
                 leer_matriz_reglas_gio(ruta)
 
 

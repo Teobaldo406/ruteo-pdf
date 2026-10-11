@@ -140,6 +140,8 @@ def normalizar_fila(
     datos: Dict[str, str] = {}
     for canonica, original in columnas.items():
         valor = fila.get(original, "")
+        if canonica in {"HI", "HF"}:
+            datos[f"{canonica}_ORIGINAL"] = "" if valor is None else str(valor)
         if canonica in {"OT", "OS", "NIS", "ACC", "COO", "ACTIVIDAD"}:
             datos[canonica] = normalizar_identificador(valor)
         elif canonica in {"TIPO", "TIPO_OS", "ESTADO"}:
@@ -152,10 +154,12 @@ def normalizar_fila(
         elif canonica in {"HI", "HF"}:
             try:
                 datos[canonica] = normalizar_hora(valor)
+                datos[f"{canonica}_NORMALIZADA"] = datos[canonica]
             except ValueError:
                 # Se conserva el valor recibido para que la etapa de reglas lo
                 # envíe a revisión con evidencia, sin ocultarlo ni inventarlo.
                 datos[canonica] = normalizar_texto(valor)
+                datos[f"{canonica}_NORMALIZADA"] = datos[canonica]
         else:
             datos[canonica] = normalizar_texto(valor)
     observacion = datos.get("OBS", "")

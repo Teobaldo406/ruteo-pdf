@@ -88,13 +88,38 @@ class PruebasCierres(unittest.TestCase):
             [cierre], configuracion=self.configuracion, tabla_lecturas=tabla_lecturas()
         )
         self.assertEqual(len(resultado.listas), 1)
-        self.assertEqual(cierre.datos_normalizados["HI"], "12:00")
-        self.assertEqual(cierre.datos_normalizados["HF"], "12:00")
+        self.assertEqual(cierre.datos_normalizados["HI"], "12")
+        self.assertEqual(cierre.datos_normalizados["HF"], "12")
+        self.assertEqual(cierre.datos_normalizados["HI_FINAL"], "12")
+        self.assertEqual(cierre.datos_normalizados["HF_FINAL"], "12")
+        self.assertEqual(
+            cierre.datos_normalizados["MOTIVO_CORRECCION_HORA"],
+            "TIPO_C_HORA_IGUAL_O_SUPERIOR_14_00",
+        )
         self.assertEqual(cierre.datos_normalizados["OBS"], "HI: 12:00 HF: 12:00 OBS: texto posterior")
 
         visita = registro_cierre(10, tipo="V", hi="14:00", hf="15:30")
         procesar_cierres([visita], configuracion=self.configuracion, tabla_lecturas=tabla_lecturas())
         self.assertEqual(visita.datos_normalizados["HI"], "14:00")
+        self.assertEqual(visita.datos_normalizados["HI_FINAL"], "14:00")
+        self.assertEqual(
+            visita.datos_normalizados["MOTIVO_CORRECCION_HORA"],
+            "NO_APLICA_TIPO_DISTINTO_C",
+        )
+
+        antes_limite = registro_cierre(10, tipo="C", hi="13,46", hf="13,46")
+        antes_limite.datos_normalizados["HI_ORIGINAL"] = "13,46"
+        antes_limite.datos_normalizados["HF_ORIGINAL"] = "13,46"
+        procesar_cierres(
+            [antes_limite], configuracion=self.configuracion,
+            tabla_lecturas=tabla_lecturas(),
+        )
+        self.assertEqual(antes_limite.datos_normalizados["HI_FINAL"], "13,46")
+        self.assertEqual(antes_limite.datos_normalizados["HF_FINAL"], "13,46")
+        self.assertEqual(
+            antes_limite.datos_normalizados["MOTIVO_CORRECCION_HORA"],
+            "NO_REQUIERE_CORRECCION_ANTES_DE_14_00",
+        )
 
     def test_sin_matriz_no_inventa_accion(self):
         resultado = procesar_cierres(

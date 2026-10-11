@@ -167,6 +167,15 @@ class RegistroProcesamiento:
             "COO_ORIGINAL_SYSACAO": self.datos_normalizados.get("COO_ORIGINAL_SYSACAO", ""),
             "COO_FINAL_GIO": self.datos_normalizados.get("COO_FINAL_GIO", ""),
             "ESTADO_CONVERSION": self.datos_normalizados.get("ESTADO_CONVERSION", ""),
+            "HI_ORIGINAL": self.datos_normalizados.get("HI_ORIGINAL", ""),
+            "HF_ORIGINAL": self.datos_normalizados.get("HF_ORIGINAL", ""),
+            "HI_NORMALIZADA": self.datos_normalizados.get("HI_NORMALIZADA", ""),
+            "HF_NORMALIZADA": self.datos_normalizados.get("HF_NORMALIZADA", ""),
+            "HI_FINAL": self.datos_normalizados.get("HI_FINAL", ""),
+            "HF_FINAL": self.datos_normalizados.get("HF_FINAL", ""),
+            "MOTIVO_CORRECCION_HORA": self.datos_normalizados.get(
+                "MOTIVO_CORRECCION_HORA", ""
+            ),
             "ESTADO_FILA": self.estado.value,
             "ARCHIVO_DESTINO": self.archivo_destino,
             "DESTINO": self.archivo_destino or self.estado.value,
@@ -225,6 +234,8 @@ class ContextoEjecucion:
     metadatos_entradas: Dict[str, Any] = field(default_factory=dict)
     entregable_cierres: str = ""
     entregable_actualizado: str = ""
+    identidad_entradas: Dict[str, str] = field(default_factory=dict)
+    estado_proceso: str = "INICIADO"
 
     def cambiar_estado(self, etapa: str, estado: EstadoEtapa) -> None:
         self.estados_etapas[etapa] = estado
@@ -235,6 +246,8 @@ class ResultadoFlujoComun:
     registros: List[RegistroProcesamiento]
     data_filtrada: List[RegistroProcesamiento]
     resumen: ResumenEtapa
+    cierres_preparados: List[RegistroProcesamiento] = field(default_factory=list)
+    reaperturas_preparadas: List[RegistroProcesamiento] = field(default_factory=list)
     bloqueos: List[str] = field(default_factory=list)
 
 

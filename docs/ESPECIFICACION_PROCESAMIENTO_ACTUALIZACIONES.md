@@ -157,7 +157,7 @@ Una muestra histórica demuestra que un valor existe, pero no lo convierte por s
 - Empaquetado con PyInstaller mediante `crear_instalable.py`.
 - Pruebas actuales con `unittest`; `pytest` está disponible como dependencia de desarrollo.
 - El proyecto de Visual Studio `RUTEO_PYTHON_APP.pyproj` declara `main.py` como archivo de inicio.
-- La versión observada al consolidar esta especificación es `1.0.9`; este documento no la modifica.
+- La versión publicada con esta implementación es `1.0.10`.
 
 ### 3.2 Inicio del programa
 

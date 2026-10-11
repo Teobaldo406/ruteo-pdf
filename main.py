@@ -56,6 +56,7 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QComboBox,
+        QDialog,
         QFileDialog,
         QFrame,
         QGridLayout,
@@ -1680,6 +1681,57 @@ class FondoInicioWidget(QWidget):
             painter.drawPixmap(x, y, fondo)
 
 
+class DialogoSesionCerrada(QDialog):
+    """Aviso independiente que permite iniciar una sesión completamente nueva."""
+
+    def __init__(self, abrir_nuevamente, parent=None):
+        super().__init__(parent)
+        self._abrir_nuevamente = abrir_nuevamente
+        self._reabriendo = False
+        self.setWindowTitle("Sesión cerrada por inactividad")
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowCloseButtonHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setModal(False)
+        self.setFixedSize(520, 235)
+        caja = QVBoxLayout(self)
+        caja.setContentsMargins(24, 22, 24, 22)
+        caja.setSpacing(14)
+        titulo = QLabel("SESIÓN CERRADA POR INACTIVIDAD")
+        titulo.setStyleSheet("font-size:17px; font-weight:700; color:#17365d;")
+        mensaje = QLabel(
+            "La sesión se cerró porque no se detectó actividad durante el "
+            "tiempo permitido."
+        )
+        mensaje.setWordWrap(True)
+        boton = QPushButton("Abrir aplicación nuevamente")
+        boton.setDefault(True)
+        boton.setMinimumHeight(38)
+        boton.clicked.connect(self._reabrir)
+        caja.addWidget(titulo)
+        caja.addWidget(mensaje)
+        caja.addStretch()
+        caja.addWidget(boton)
+
+    def _reabrir(self):
+        self._reabriendo = True
+        self.accept()
+        self._abrir_nuevamente()
+
+    def reject(self):
+        if not self._reabriendo:
+            QApplication.quit()
+        super().reject()
+
+    def closeEvent(self, event):
+        if not self._reabriendo:
+            QApplication.quit()
+        super().closeEvent(event)
+
+
 class VentanaRuteo(QMainWindow):
     TIEMPO_CIERRE_AUTOMATICO_MS = 5 * 60 * 60 * 1000
     TIEMPO_AVISO_CIERRE_MS = TIEMPO_CIERRE_AUTOMATICO_MS - (5 * 60 * 1000)
@@ -1704,12 +1756,23 @@ class VentanaRuteo(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        # Solicitar explícitamente el marco nativo de Windows. De esta manera la
+        # ventana conserva barra de título, bordes redimensionables y los botones
+        # estándar aunque Qt o el empaquetado cambien sus valores predeterminados.
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
         self.setWindowTitle(f"Aplicativo CyR v{CURRENT_VERSION} - cierres y reaperturas")
         app_icon = load_app_icon()
         if not app_icon.isNull():
             self.setWindowIcon(app_icon)
-        self.resize(980, 720)
-        self.setMinimumSize(820, 560)
+        self.resize(1120, 730)
+        self.setMinimumSize(960, 600)
 
         self.sheets: List[SheetInfo] = []
         self.data: Optional[LoadedData] = None
@@ -1736,6 +1799,8 @@ class VentanaRuteo(QMainWindow):
         self.ruta_txt_cyr_sansys = ""
         self.ruta_carpeta_txt_cyr = ""
         self._cierre_automatico_en_curso = False
+        self._cierre_sesion_pendiente = False
+        self.dialogo_sesion_cerrada: Optional[DialogoSesionCerrada] = None
 
         self.senal_registro.connect(self._agregar_registro)
         self.senal_registro_txt.connect(self._agregar_registro_txt_cyr)
@@ -1793,9 +1858,111 @@ class VentanaRuteo(QMainWindow):
         )
 
     def _cerrar_por_tiempo_cumplido(self):
+        if self._cierre_sesion_pendiente:
+            return
         self._cierre_automatico_en_curso = True
-        self.write_log("Se cumplieron 5 horas sin actividad. Cerrando el aplicativo automáticamente.")
-        self.close()
+        self._cierre_sesion_pendiente = True
+        self.temporizador_aviso_inactividad.stop()
+        self.temporizador_cierre_inactividad.stop()
+        self.write_log(
+            "Se cumplieron 5 horas sin actividad. Cerrando la sesión actual."
+        )
+        pagina = getattr(self, "pagina_procesamiento_actualizaciones", None)
+        if pagina is not None and pagina.hilo is not None and pagina.hilo.isRunning():
+            self._set_main_controls_enabled(False)
+            self.etiqueta_estado_sesion = QLabel(
+                "Cerrando sesión de forma segura; espere a que termine la cancelación…",
+                self,
+            )
+            self.etiqueta_estado_sesion.setStyleSheet(
+                "background:#fff3cd; color:#7a4d00; padding:10px; font-weight:700;"
+            )
+            self.etiqueta_estado_sesion.setGeometry(20, 50, max(460, self.width() - 40), 44)
+            self.etiqueta_estado_sesion.show()
+            pagina.trabajador.solicitar_cancelacion()
+            pagina.hilo.finished.connect(self._finalizar_cierre_sesion_inactiva)
+            return
+        if self._google_worker_thread is not None and self._google_worker_thread.isRunning():
+            # Estos trabajadores no exponen cancelación cooperativa. Se espera
+            # su finalización normal para no interrumpir una lectura en curso.
+            self._set_main_controls_enabled(False)
+            self._google_worker_thread.finished.connect(
+                self._finalizar_cierre_sesion_inactiva
+            )
+            return
+        self._finalizar_cierre_sesion_inactiva()
+
+    def _finalizar_cierre_sesion_inactiva(self):
+        pagina = getattr(self, "pagina_procesamiento_actualizaciones", None)
+        if pagina is not None and pagina.hilo is not None and pagina.hilo.isRunning():
+            return
+        if self._google_worker_thread is not None and self._google_worker_thread.isRunning():
+            return
+        self._limpiar_estado_sesion()
+        self.hide()
+        self.dialogo_sesion_cerrada = DialogoSesionCerrada(
+            self._abrir_aplicacion_nuevamente
+        )
+        icono = self.windowIcon()
+        if not icono.isNull():
+            self.dialogo_sesion_cerrada.setWindowIcon(icono)
+        geometria = self.frameGeometry()
+        dialogo_geometria = self.dialogo_sesion_cerrada.frameGeometry()
+        dialogo_geometria.moveCenter(geometria.center())
+        self.dialogo_sesion_cerrada.move(dialogo_geometria.topLeft())
+        self.dialogo_sesion_cerrada.show()
+        self.dialogo_sesion_cerrada.raise_()
+        self.dialogo_sesion_cerrada.activateWindow()
+
+    def _limpiar_estado_sesion(self):
+        pagina = getattr(self, "pagina_procesamiento_actualizaciones", None)
+        if pagina is not None:
+            pagina.limpiar_sesion()
+        self.sheets = []
+        self.data = None
+        self.current_workbook = None
+        self.pending_google_workbook = None
+        self.filtered_rows_cache = []
+        self.ruta_txt_cyr_sansys = ""
+        self.ruta_carpeta_txt_cyr = ""
+        self.google_changes_pending = False
+        for nombre in (
+            "entrada_archivo",
+            "entrada_salida",
+            "entrada_archivo_txt_cyr",
+            "entrada_carpeta_txt_cyr",
+        ):
+            control = getattr(self, nombre, None)
+            if control is not None and hasattr(control, "clear"):
+                control.clear()
+        if hasattr(self, "pagina_extractor_ordenes"):
+            self.pagina_extractor_ordenes.limpiar()
+        if hasattr(self, "pagina_depuracion_ot"):
+            pagina_depuracion = self.pagina_depuracion_ot
+            pagina_depuracion.ruta_reaperturas = ""
+            pagina_depuracion.ruta_accion = ""
+            pagina_depuracion.ruta_plantilla = ""
+            pagina_depuracion.ruta_salida = ""
+            pagina_depuracion.resultado = None
+            for etiqueta in pagina_depuracion.etiquetas_archivos:
+                etiqueta.setText("Archivo: --")
+            pagina_depuracion.etiqueta_salida.setText("Ruta: --")
+            pagina_depuracion.texto_resumen.setPlainText(
+                pagina_depuracion._resumen_inicial()
+            )
+            pagina_depuracion.etiqueta_estado.setText("Estado: listo")
+        self._marcar_modulo_activo(self.accion_pagina_ruteo)
+        self.stack_paginas.setCurrentWidget(self.pagina_ruteo)
+
+    def _abrir_aplicacion_nuevamente(self):
+        self.dialogo_sesion_cerrada = None
+        self._cierre_sesion_pendiente = False
+        self._cierre_automatico_en_curso = False
+        self._set_main_controls_enabled(True)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._reiniciar_temporizadores_inactividad()
 
     def _construir_menu(self):
         self.accion_pagina_ruteo = QAction("Inicio", self)
@@ -1839,10 +2006,16 @@ class VentanaRuteo(QMainWindow):
         self.accion_importar_google.triggered.connect(lambda _checked=False: self.import_from_google_sheets())
         self.accion_actualizar_google.triggered.connect(lambda _checked=False: self.refresh_from_google_sheets())
 
-        menu_importar = QMenu("Importar", self)
+        menu_importar = QMenu("Ajustes", self)
+        self.accion_ajustes_modo_c03 = QAction("Configurar Modo C03", self)
+        self.accion_ajustes_modo_c03.setIcon(self._icono_navegacion("ajustes"))
+        self.accion_ajustes_modo_c03.triggered.connect(
+            lambda _checked=False: self.pagina_procesamiento_actualizaciones.mostrar_ajustes()
+        )
+        menu_importar.addAction(self.accion_ajustes_modo_c03)
+        menu_importar.addSeparator()
         menu_importar.addAction(self.accion_importar_excel)
         menu_importar.addAction(self.accion_importar_google)
-        menu_importar.addSeparator()
         menu_importar.addAction(self.accion_actualizar_google)
 
         self.accion_buscar_actualizaciones = QAction("Buscar actualizaciones", self)
@@ -1869,7 +2042,13 @@ class VentanaRuteo(QMainWindow):
         self.barra_navegacion.addWidget(separador_flexible)
 
         self.boton_importar_navegacion = self._crear_boton_menu_navegacion(
-            "Importar", "importar", menu_importar
+            "Ajustes", "ajustes", menu_importar
+        )
+        self.boton_importar_navegacion.setPopupMode(
+            QToolButton.ToolButtonPopupMode.MenuButtonPopup
+        )
+        self.boton_importar_navegacion.clicked.connect(
+            lambda _checked=False: self.pagina_procesamiento_actualizaciones.mostrar_ajustes()
         )
         self.boton_ayuda_navegacion = self._crear_boton_menu_navegacion(
             "Ayuda", "ayuda", menu_ayuda
@@ -2531,6 +2710,7 @@ class VentanaRuteo(QMainWindow):
         glifos = {
             "inicio": "\ue80f",
             "importar": "\ue8b5",
+            "ajustes": "\ue713",
             "texto": "\ue8a5",
             "buscar": "\ue721",
             "depurar": "\ue71c",
@@ -2724,6 +2904,28 @@ class VentanaRuteo(QMainWindow):
             self.busy_overlay.setGeometry(self.rect())
 
     def closeEvent(self, event):
+        pagina_actualizaciones = getattr(
+            self, "pagina_procesamiento_actualizaciones", None
+        )
+        if (
+            pagina_actualizaciones is not None
+            and pagina_actualizaciones.hilo is not None
+            and pagina_actualizaciones.hilo.isRunning()
+        ):
+            confirmar = pagina_actualizaciones._confirmar_accion(
+                "Cerrar durante el procesamiento",
+                "El módulo de procesamiento de actualizaciones continúa trabajando. "
+                "Si continúa, se solicitará la cancelación y la aplicación se cerrará "
+                "cuando el hilo termine de forma segura.\n\n¿Desea cerrar la aplicación?",
+                "Sí, cancelar y cerrar",
+                "No, mantener abierta",
+                critica=True,
+            )
+            if confirmar:
+                pagina_actualizaciones.trabajador.solicitar_cancelacion()
+                pagina_actualizaciones.hilo.finished.connect(self.close)
+            event.ignore()
+            return
         if self.is_busy and not self._cierre_automatico_en_curso:
             QMessageBox.information(self, "Proceso en ejecución", "Espere a que termine la actualización de datos.")
             event.ignore()
@@ -3116,7 +3318,7 @@ class VentanaRuteo(QMainWindow):
             self.write_log("Hojas encontradas: " + ", ".join(sheet.name for sheet in self.current_workbook.sheets))
             return
         if path.startswith("https://docs.google.com/spreadsheets/"):
-            QMessageBox.information(self, "Google Sheets", "Usa Importar > Desde Google Sheets para cargar el libro completo.")
+            QMessageBox.information(self, "Google Sheets", "Usa Ajustes > Desde Google Sheets para cargar el libro completo.")
             return
         if path.lower().endswith(".csv"):
             self.sheets = [SheetInfo("CSV", "", "")]

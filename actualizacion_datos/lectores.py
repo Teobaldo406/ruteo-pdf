@@ -30,25 +30,38 @@ class LibroReglasCargado:
 
 
 def leer_matriz_reglas_gio(ruta: Path) -> MatrizReglasGio:
-    """Verifica las cuatro hojas y carga la matriz ejecutable y su respaldo."""
+    """Carga una sola vez todas las hojas de la matriz y construye sus índices."""
     ruta = Path(ruta)
     try:
         with zipfile.ZipFile(ruta) as archivo_zip:
+            compartidos = _textos_compartidos(archivo_zip)
             hojas = _mapa_hojas(archivo_zip)
+            normalizadas = {_nombre_comparable(nombre): nombre for nombre in hojas}
+            faltantes = sorted(HOJAS_MATRIZ_GIO - set(normalizadas))
+            if faltantes:
+                raise ValueError(
+                    "La matriz GIO no contiene las hojas obligatorias: "
+                    + ", ".join(faltantes)
+                    + f". Hojas detectadas: {', '.join(hojas) or 'ninguna'}."
+                )
+            tablas: Dict[str, TablaDatos] = {}
+            for nombre, destino in hojas.items():
+                raiz = ET.fromstring(archivo_zip.read(destino))
+                filas, max_columna = _filas_crudas_xlsx(raiz, compartidos)
+                if 1 in filas:
+                    tablas[nombre] = _tabla_desde_filas_xlsx(
+                        ruta, nombre, filas, max_columna, 1
+                    )
+                else:
+                    tablas[nombre] = TablaDatos(
+                        ruta=ruta, encabezados=[], filas=[], hoja=nombre,
+                        formato=FormatoArchivo("xlsx", codificacion="binario-xlsx"),
+                    )
     except (zipfile.BadZipFile, KeyError, ET.ParseError) as error:
         raise ValueError(f"El archivo '{ruta.name}' no es un XLSX válido.") from error
-    normalizadas = {_nombre_comparable(nombre): nombre for nombre in hojas}
-    faltantes = sorted(HOJAS_MATRIZ_GIO - set(normalizadas))
-    if faltantes:
-        raise ValueError(
-            "La matriz GIO no contiene las hojas obligatorias: "
-            + ", ".join(faltantes)
-            + f". Hojas detectadas: {', '.join(hojas) or 'ninguna'}."
-        )
-    reglas = leer_xlsx(ruta, hoja=normalizadas["REGLAS_GIO"], fila_encabezado=1)
-    combinaciones = leer_xlsx(
-        ruta, hoja=normalizadas["COMBINACIONES_GIO"], fila_encabezado=1
-    )
+    reglas = tablas[normalizadas["REGLAS_GIO"]]
+    combinaciones = tablas[normalizadas["COMBINACIONES_GIO"]]
+    tipologias = tablas[normalizadas["MATRIZ_TIPOLOGIAS"]]
     requeridas_reglas = {
         "ID_REGLA", "PRIORIDAD", "RGLA", "COINCIDENCIA_OBS", "PATRON_OBS",
         "CONDICION_ACC", "ACC_LISTA", "ACC_MIN", "ACC_MAX", "RESULTADO",
@@ -69,7 +82,10 @@ def leer_matriz_reglas_gio(ruta: Path) -> MatrizReglasGio:
             "La hoja COMBINACIONES_GIO no contiene las columnas: "
             + ", ".join(faltantes_combinaciones)
         )
-    return construir_matriz_gio(reglas, combinaciones, hojas.keys(), ruta=ruta)
+    return construir_matriz_gio(
+        reglas, combinaciones, hojas.keys(), ruta=ruta,
+        tabla_tipologias=tipologias, tablas=tablas,
+    )
 
 
 def _leer_texto(ruta: Path) -> Tuple[str, str]:

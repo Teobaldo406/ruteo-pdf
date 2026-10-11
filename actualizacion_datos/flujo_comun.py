@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from collections import Counter, defaultdict
 import re
 from typing import Dict, List, Optional, Set, Tuple
@@ -116,7 +117,10 @@ def _leer_bloque_operativo(
         return None
     if not identificador.fullmatch(datos.get("COO", "")):
         return None
-    return {campo: datos.get(campo, "") for campo in CAMPOS_BLOQUE_OPERATIVO}
+    resultado = {campo: datos.get(campo, "") for campo in CAMPOS_BLOQUE_OPERATIVO}
+    for campo in ("HI_ORIGINAL", "HF_ORIGINAL", "HI_NORMALIZADA", "HF_NORMALIZADA"):
+        resultado[campo] = datos.get(campo, "")
+    return resultado
 
 
 def _valores_sector_operativo(
@@ -217,44 +221,51 @@ def _revisar(
 def procesar_flujo_comun(
     tabla_general: TablaDatos,
     tabla_control: TablaDatos,
-    tabla_entregable_acumulado: TablaDatos,
+    tabla_entregable_acumulado: Optional[TablaDatos],
     *,
     fecha_procesamiento: str,
     configuracion: Optional[ConfiguracionProcesamiento] = None,
     tabla_operarios: Optional[TablaDatos] = None,
     tabla_actividades: Optional[TablaDatos] = None,
+    considerar_entregable_acumulado: bool = True,
+    confirmacion_sin_entregable: bool = False,
 ) -> ResultadoFlujoComun:
     """Ejecuta reglas comunes y conserva el destino auditable de cada fila."""
     configuracion = configuracion or ConfiguracionProcesamiento.predeterminada()
     fecha_objetivo = normalizar_fecha(fecha_procesamiento)
     registros = _crear_registros(tabla_general, configuracion)
-    # La conciliación comienza con la fecha seleccionada. Las filas que tienen
-    # otra fecha válida se descartan antes de aplicar reglas y no se cuentan
-    # como exclusión, revisión o error. Una fecha vacía o ilegible se conserva
-    # para que el defecto sí quede registrado y no desaparezca silenciosamente.
+    # La ejecución pertenece exclusivamente a la fecha elegida. Cualquier fila
+    # con otra fecha, vacía o ilegible queda fuera antes de reglas, conteos,
+    # revisiones y auditoría de esta ejecución.
     registros_fecha: List[RegistroProcesamiento] = []
     for registro in registros:
         fecha_cruda = registro.datos_normalizados.get("FECHA", "")
         try:
             fecha_normalizada = normalizar_fecha(fecha_cruda)
         except ValueError:
-            registros_fecha.append(registro)
             continue
-        if not fecha_normalizada or fecha_normalizada == fecha_objetivo:
+        if fecha_normalizada == fecha_objetivo:
             registros_fecha.append(registro)
     registros = registros_fecha
     por_os, os_por_ot = _indice_control(tabla_control, configuracion)
     actividades = _indice_actividades(tabla_actividades, configuracion)
     operarios = _indice_operarios(tabla_operarios)
 
-    columnas_acumulado = resolver_columnas(
-        tabla_entregable_acumulado.encabezados, configuracion
-    )
-    if "OT" not in columnas_acumulado:
-        raise ValueError("El entregable acumulado no contiene una columna OT reconocible.")
-    ots_acumulado = _valores_columna(tabla_entregable_acumulado, "OT", configuracion)
-    os_acumulado = set(_valores_columna(tabla_entregable_acumulado, "OS", configuracion))
-    nis_acumulado = set(_valores_columna(tabla_entregable_acumulado, "NIS", configuracion))
+    if considerar_entregable_acumulado:
+        if tabla_entregable_acumulado is None:
+            raise ValueError("El entregable acumulado está activado y no fue cargado.")
+        columnas_acumulado = resolver_columnas(
+            tabla_entregable_acumulado.encabezados, configuracion
+        )
+        if "OT" not in columnas_acumulado:
+            raise ValueError("El entregable acumulado no contiene una columna OT reconocible.")
+        ots_acumulado = _valores_columna(tabla_entregable_acumulado, "OT", configuracion)
+        os_acumulado = set(_valores_columna(tabla_entregable_acumulado, "OS", configuracion))
+        nis_acumulado = set(_valores_columna(tabla_entregable_acumulado, "NIS", configuracion))
+    else:
+        ots_acumulado = []
+        os_acumulado = set()
+        nis_acumulado = set()
     conteo_ots = Counter(ot for ot in ots_acumulado if ot)
     ots_unicas = {ot for ot, cantidad in conteo_ots.items() if cantidad == 1}
     ots_duplicadas = {ot for ot, cantidad in conteo_ots.items() if cantidad > 1}
@@ -270,6 +281,19 @@ def procesar_flujo_comun(
             continue
         datos = registro.datos_normalizados
         ot, os = datos.get("OT", ""), datos.get("OS", "")
+        datos["ENTREGABLE_ACUMULADO_CONSIDERADO"] = (
+            "SI" if considerar_entregable_acumulado else "NO"
+        )
+        datos["VALIDACION_ENTREGABLE_ACUMULADO"] = (
+            "EJECUTADA" if considerar_entregable_acumulado
+            else "OMITIDA_POR_DECISION_USUARIO"
+        )
+        datos["ENTREGABLE_CIERRES_DIA"] = (
+            "UTILIZADO" if considerar_entregable_acumulado else "NO_UTILIZADO"
+        )
+        datos["CONFIRMACION_SIN_ENTREGABLE"] = (
+            "SI" if confirmacion_sin_entregable else "NO"
+        )
         datos["ENTREGABLE_COINCIDE_OT"] = "SI" if ot and ot in conteo_ots else "NO"
         datos["ENTREGABLE_COINCIDE_OS"] = "SI" if os and os in os_acumulado else "NO"
         datos["ENTREGABLE_COINCIDE_NIS_RAD"] = (
@@ -294,16 +318,22 @@ def procesar_flujo_comun(
         if fecha_fila != fecha_objetivo:
             continue
 
-        if ot in ots_duplicadas:
+        if considerar_entregable_acumulado and ot in ots_duplicadas:
             _revisar(
                 registro, "COM-05", "ENTREGABLE_ACUMULADO", "CLAVE_ENTREGABLE_DUPLICADA",
                 ot, "OT única en el entregable acumulado",
             )
             continue
-        if ot in ots_unicas:
+        if considerar_entregable_acumulado and (
+            ot in ots_unicas or (os and os in os_acumulado)
+        ):
+            identificador_coincidente = (
+                f"OT={ot}" if ot in ots_unicas else f"OS={os}"
+            )
             registro.registrar(
                 "COM-03", "ENTREGABLE_ACUMULADO", CategoriaResultado.EXCLUSION_OPERATIVA,
-                "YA_ACTUALIZADA_EN_ENTREGABLE", ot, "OT ausente del acumulado",
+                "YA_ACTUALIZADA_EN_ENTREGABLE", identificador_coincidente,
+                "OT y OS ausentes del entregable del día",
             )
             continue
 
@@ -440,11 +470,24 @@ def procesar_flujo_comun(
         )
 
     verificar_conservacion(registros)
-    data_filtrada = [fila for fila in registros if fila.estado == EstadoFila.DATA_FILTRADA]
+    # DATA_FILTRADA es la fotografía completa e inmutable de la fecha elegida.
+    # Las ramas reciben copias independientes de las filas que superaron las
+    # validaciones comunes; de este modo cierres y reaperturas nunca alteran la
+    # base de la sesión ni comparten objetos mutables entre sí.
+    data_filtrada = deepcopy(registros)
+    aprobadas = [fila for fila in registros if fila.estado == EstadoFila.DATA_FILTRADA]
+    cierres_preparados = deepcopy([
+        fila for fila in aprobadas if fila.tipo in configuracion.tipos_cierre
+    ])
+    reaperturas_preparadas = deepcopy([
+        fila for fila in aprobadas if fila.tipo in configuracion.tipos_reapertura
+    ])
     resumen = resumir_etapa("FLUJO_COMUN", registros)
     return ResultadoFlujoComun(
         registros=registros,
         data_filtrada=data_filtrada,
+        cierres_preparados=cierres_preparados,
+        reaperturas_preparadas=reaperturas_preparadas,
         resumen=resumen,
         bloqueos=bloqueos,
     )

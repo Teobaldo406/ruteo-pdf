@@ -53,6 +53,25 @@ class PruebasFlujoComun(unittest.TestCase):
         self.assertEqual(registro.datos_normalizados["NIS"], "3276052")
         self.assertNotEqual(registro.datos_normalizados["OS"], "222222222")
 
+    def test_bloque_operativo_conserva_horas_originales_sin_formatear(self):
+        general = tabla(
+            "sansys.csv",
+            ["null", *[f"COLUMNA_{i}" for i in range(1, 9)]],
+            [{
+                "null": "71900001", "COLUMNA_1": "214000001",
+                "COLUMNA_2": "16/09/2026", "COLUMNA_3": "18.26",
+                "COLUMNA_4": "18.30", "COLUMNA_5": "511",
+                "COLUMNA_6": "0017", "COLUMNA_7": "OBS",
+                "COLUMNA_8": "25",
+            }],
+        )
+        registro = _crear_registros(general, self.configuracion)[0]
+        datos = registro.datos_normalizados
+        self.assertEqual(datos["HI_ORIGINAL"], "18.26")
+        self.assertEqual(datos["HF_ORIGINAL"], "18.30")
+        self.assertEqual(datos["HI_NORMALIZADA"], "18:26")
+        self.assertEqual(datos["HF_NORMALIZADA"], "18:30")
+
     def test_detecta_bloque_desplazado_solo_en_la_fila_afectada(self):
         encabezados = [
             "nro_ot", "nnum_os", "nis_rad", "vtipo_os", "null",
@@ -201,7 +220,10 @@ class PruebasFlujoComun(unittest.TestCase):
             general, control, self.acumulado, fecha_procesamiento="21/09/2026",
             configuracion=self.configuracion, tabla_operarios=operarios,
         )
-        self.assertEqual([r.datos_normalizados["COO"] for r in resultado.data_filtrada], ["G1", "G2", "G3", "G9"])
+        self.assertEqual(
+            [r.datos_normalizados["COO"] for r in resultado.cierres_preparados],
+            ["G1", "G2", "G3", "G9"],
+        )
         self.assertEqual(resultado.data_filtrada[3].datos_normalizados["ESTADO_CONVERSION"], "SIN_CONVERSION_REQUERIDA")
         revisiones = {r.ot: r for r in resultado.registros if r.motivo_final}
         self.assertNotIn("OT-3", revisiones)
@@ -232,13 +254,14 @@ class PruebasFlujoComun(unittest.TestCase):
             general, control, self.acumulado, fecha_procesamiento="21/09/2026",
             configuracion=self.configuracion, tabla_operarios=operarios,
         )
-        self.assertEqual(len(resultado.data_filtrada), 20)
+        self.assertEqual(len(resultado.data_filtrada), 21)
+        self.assertEqual(len(resultado.cierres_preparados), 20)
         self.assertEqual(
             [r.datos_normalizados["COO"] for r in resultado.data_filtrada[:18]],
             conservados,
         )
         self.assertEqual(
-            [r.datos_normalizados["COO"] for r in resultado.data_filtrada[18:]],
+            [r.datos_normalizados["COO"] for r in resultado.cierres_preparados[18:]],
             ["FINAL-1", "FINAL-2"],
         )
         self.assertEqual(resultado.registros[-1].motivo_final, "COO_VACIO")
@@ -290,12 +313,62 @@ class PruebasFlujoComun(unittest.TestCase):
             tabla_operarios=self.operarios,
         )
         self.assertEqual(len(resultado.registros), 5)
-        self.assertEqual([fila.ot for fila in resultado.data_filtrada], ["OT-1"])
+        self.assertEqual(
+            [fila.ot for fila in resultado.data_filtrada],
+            ["OT-1", "OT-YA", "OT-3", "OT-4", "OT-5"],
+        )
+        self.assertEqual([fila.ot for fila in resultado.cierres_preparados], ["OT-1"])
         motivos = {fila.ot: fila.motivo_final for fila in resultado.registros if fila.motivo_final}
         self.assertEqual(motivos["OT-YA"], "YA_ACTUALIZADA_EN_ENTREGABLE")
         self.assertEqual(motivos["OT-3"], "INCONSISTENCIA_OT_OS")
         self.assertEqual(motivos["OT-4"], "ESTADO_NO_ACTUALIZABLE")
         self.assertEqual(motivos["OT-5"], "TIPO_PENDIENTE_DE_CONFIRMACION")
+
+    def test_omite_cruce_acumulado_y_conserva_auditoria_de_decision(self):
+        general = tabla(
+            "general.csv", ["OT", "OS", "NIS", "FECHA", "TIPO", "COO"],
+            [{"OT": "OT-YA", "OS": "OS-YA", "NIS": "99",
+              "FECHA": "21/09/2026", "TIPO": "C", "COO": "S1"}],
+        )
+        control = tabla(
+            "gio.txt", ["OT", "OS", "ESTADO"],
+            [{"OT": "OT-YA", "OS": "OS-YA", "ESTADO": "TRAB"}],
+        )
+        resultado = procesar_flujo_comun(
+            general, control, None, fecha_procesamiento="21/09/2026",
+            configuracion=self.configuracion, tabla_operarios=self.operarios,
+            considerar_entregable_acumulado=False,
+            confirmacion_sin_entregable=True,
+        )
+        self.assertEqual(len(resultado.data_filtrada), 1)
+        datos = resultado.data_filtrada[0].datos_normalizados
+        self.assertEqual(datos["ENTREGABLE_ACUMULADO_CONSIDERADO"], "NO")
+        self.assertEqual(
+            datos["VALIDACION_ENTREGABLE_ACUMULADO"],
+            "OMITIDA_POR_DECISION_USUARIO",
+        )
+        self.assertEqual(datos["ENTREGABLE_CIERRES_DIA"], "NO_UTILIZADO")
+        self.assertEqual(datos["CONFIRMACION_SIN_ENTREGABLE"], "SI")
+
+    def test_coincidencia_por_os_excluye_antes_del_estado_trabajando(self):
+        general = tabla(
+            "general.csv", ["OT", "OS", "NIS", "FECHA", "TIPO", "COO"],
+            [{"OT": "OT-NUEVA", "OS": "OS-YA", "NIS": "7",
+              "FECHA": "21/09/2026", "TIPO": "C", "COO": "S1"}],
+        )
+        control = tabla(
+            "gio.txt", ["OT", "OS", "ESTADO"],
+            [{"OT": "OT-NUEVA", "OS": "OS-YA", "ESTADO": "TRAB"}],
+        )
+        resultado = procesar_flujo_comun(
+            general, control, self.acumulado,
+            fecha_procesamiento="21/09/2026", configuracion=self.configuracion,
+            tabla_operarios=self.operarios,
+        )
+        fila = resultado.registros[0]
+        self.assertEqual(fila.motivo_final, "YA_ACTUALIZADA_EN_ENTREGABLE")
+        self.assertEqual(fila.historial[-1].valor_recibido, "OS=OS-YA")
+        self.assertEqual(len(resultado.cierres_preparados), 0)
 
     def test_os_duplicada_va_a_revision_sin_multiplicar(self):
         general = tabla(

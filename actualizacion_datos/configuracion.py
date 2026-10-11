@@ -72,8 +72,9 @@ class ConfiguracionProcesamiento:
     tipos_bloqueados: Set[str] = field(default_factory=lambda: {"B", "VD"})
     reglas_accion: List[ReglaAccion] = field(default_factory=list)
     limite_obs: int = 150
+    limite_obs_reapertura: int = 160
     limite_diferencia_cierre: int = 300
-    limite_diferencia_reapertura: int = 20
+    limite_diferencia_reapertura: int = 14
     contrato_cierres_sistema: ContratoTxt = field(default_factory=lambda: ContratoTxt("CIERRES_SISTEMA", ()))
     contrato_entregable_cierres: ContratoTxt = field(default_factory=lambda: ContratoTxt("ENTREGABLE_CIERRES", ()))
     contrato_reaperturas_sistema: ContratoTxt = field(default_factory=lambda: ContratoTxt("REAPERTURAS_SISTEMA", ()))
@@ -135,6 +136,7 @@ class ConfiguracionProcesamiento:
             "tipos_bloqueados": sorted(self.tipos_bloqueados),
             "reglas_accion": [asdict(regla) for regla in self.reglas_accion],
             "limite_obs": self.limite_obs,
+            "limite_obs_reapertura": self.limite_obs_reapertura,
             "limite_diferencia_cierre": self.limite_diferencia_cierre,
             "limite_diferencia_reapertura": self.limite_diferencia_reapertura,
             "modo_reglas_provisionales": self.modo_reglas_provisionales,
@@ -160,7 +162,10 @@ def cargar_configuracion_json(
     ):
         if nombre in datos:
             setattr(configuracion, nombre, {str(valor).upper() for valor in datos[nombre]})
-    for nombre in ("limite_obs", "limite_diferencia_cierre", "limite_diferencia_reapertura"):
+    for nombre in (
+        "limite_obs", "limite_obs_reapertura",
+        "limite_diferencia_cierre", "limite_diferencia_reapertura",
+    ):
         if nombre in datos:
             setattr(configuracion, nombre, int(datos[nombre]))
     if "reglas_accion" in datos:

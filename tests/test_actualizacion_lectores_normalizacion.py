@@ -94,6 +94,10 @@ class PruebasLectoresNormalizacion(unittest.TestCase):
         self.assertEqual(fila["ACC"], "511")
         self.assertEqual(fila["HI"], "09:56")
         self.assertEqual(fila["HF"], "10:01")
+        self.assertEqual(fila["HI_ORIGINAL"], "9,56")
+        self.assertEqual(fila["HF_ORIGINAL"], "10,01")
+        self.assertEqual(fila["HI_NORMALIZADA"], "09:56")
+        self.assertEqual(fila["HF_NORMALIZADA"], "10:01")
         self.assertEqual(normalizar_hora("14.05"), "14:05")
         self.assertEqual(normalizar_hora("14,05"), "14:05")
         self.assertEqual(normalizar_hora("9,56"), "09:56")
@@ -102,6 +106,21 @@ class PruebasLectoresNormalizacion(unittest.TestCase):
     def test_no_inventa_significado_de_hora_ambigua(self):
         with self.assertRaisesRegex(ValueError, "ambigua"):
             normalizar_hora("8.5")
+
+    def test_conserva_formatos_originales_de_horas(self):
+        configuracion = ConfiguracionProcesamiento.predeterminada()
+        columnas = resolver_columnas(["HI", "HF"], configuracion)
+        casos = (
+            ("9,18", "9,18", "09:18"),
+            ("09:18", "09:18", "09:18"),
+            ("9.18", "9.18", "09:18"),
+        )
+        for recibido, original, normalizada in casos:
+            fila = normalizar_fila({"HI": recibido, "HF": recibido}, columnas)
+            self.assertEqual(fila["HI_ORIGINAL"], original)
+            self.assertEqual(fila["HF_ORIGINAL"], original)
+            self.assertEqual(fila["HI_NORMALIZADA"], normalizada)
+            self.assertEqual(fila["HF_NORMALIZADA"], normalizada)
 
     def test_confirma_hora_decimal_truncada_con_la_observacion(self):
         configuracion = ConfiguracionProcesamiento.predeterminada()
